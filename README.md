@@ -2864,3 +2864,3651 @@ Performance Benchmarks:
 ```
 
 This comprehensive testing strategy ensures the KrishiMitra platform maintains the highest quality standards while providing reliable, secure, and performant services to farmers worldwide. 🌾🔬
+---
+
+## 🚢 Deployment
+
+<details>
+<summary>🚀 <strong>Production Deployment Strategy</strong></summary>
+
+### 🏗️ **Infrastructure Architecture**
+
+#### **Multi-Cloud Deployment Strategy**
+```yaml
+Primary Cloud (AWS):
+  - Production workloads (US East, Asia Pacific)
+  - Primary databases and storage
+  - ML/AI compute instances
+  - CDN and edge locations
+
+Secondary Cloud (Azure):
+  - Disaster recovery and backup
+  - European data residency
+  - Government integrations
+  - Compliance workloads
+
+Edge Locations (GCP):
+  - Regional caching and CDN
+  - IoT data ingestion points
+  - Real-time analytics processing
+  - Local compliance requirements
+```
+
+#### **Kubernetes Deployment Configuration**
+```yaml
+# infrastructure/kubernetes/production/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krishimitra-prod
+  labels:
+    name: krishimitra-prod
+    environment: production
+---
+# infrastructure/kubernetes/production/frontend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: krishimitra-frontend
+  namespace: krishimitra-prod
+spec:
+  replicas: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 2
+      maxSurge: 3
+  selector:
+    matchLabels:
+      app: krishimitra-frontend
+  template:
+    metadata:
+      labels:
+        app: krishimitra-frontend
+        version: v1.0.0
+    spec:
+      containers:
+      - name: frontend
+        image: krishimitra/frontend:1.0.0
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: API_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: krishimitra-config
+              key: api-base-url
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: krishimitra-frontend-service
+  namespace: krishimitra-prod
+spec:
+  selector:
+    app: krishimitra-frontend
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: krishimitra-frontend-ingress
+  namespace: krishimitra-prod
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  tls:
+  - hosts:
+    - krishimitra.com
+    - www.krishimitra.com
+    secretName: krishimitra-tls
+  rules:
+  - host: krishimitra.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: krishimitra-frontend-service
+            port:
+              number: 80
+```
+
+### 🔄 **CI/CD Pipeline**
+
+#### **GitHub Actions Workflow**
+```yaml
+# .github/workflows/production-deploy.yml
+name: Production Deployment
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: krishimitra
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  test:
+    runs-on: ubuntu-latest
+    needs: security-scan
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: krishimitra_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        npm run install:all
+        pip install -r services/ml-services/requirements.txt
+    
+    - name: Run database migrations
+      run: npm run db:migrate
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/krishimitra_test
+    
+    - name: Run tests
+      run: |
+        npm run test:unit
+        npm run test:integration
+        npm run test:security
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/krishimitra_test
+        REDIS_URL: redis://localhost:6379/0
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+    
+    - name: Build and push Docker images
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: staging
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+    
+    - name: Deploy to EKS Staging
+      run: |
+        aws eks update-kubeconfig --region us-east-1 --name krishimitra-staging
+        kubectl set image deployment/krishimitra-frontend \
+          frontend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          -n krishimitra-staging
+        kubectl rollout status deployment/krishimitra-frontend -n krishimitra-staging
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install Playwright
+      run: |
+        npm ci
+        npx playwright install --with-deps
+    
+    - name: Run E2E tests against staging
+      run: npx playwright test
+      env:
+        BASE_URL: https://staging.krishimitra.com
+    
+    - name: Upload E2E test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: playwright-report
+        path: playwright-report/
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [e2e-tests]
+    environment: production
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+    
+    - name: Deploy to EKS Production
+      run: |
+        aws eks update-kubeconfig --region us-east-1 --name krishimitra-production
+        
+        # Blue-Green deployment strategy
+        kubectl apply -f infrastructure/kubernetes/production/
+        
+        # Wait for rollout
+        kubectl rollout status deployment/krishimitra-frontend -n krishimitra-prod
+        kubectl rollout status deployment/krishimitra-backend -n krishimitra-prod
+        kubectl rollout status deployment/krishimitra-ml-services -n krishimitra-prod
+    
+    - name: Run smoke tests
+      run: |
+        npm run test:smoke
+      env:
+        BASE_URL: https://krishimitra.com
+    
+    - name: Notify deployment success
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: '🚀 Production deployment successful!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: [deploy-production]
+    environment: production
+    steps:
+    - name: Rollback deployment
+      run: |
+        aws eks update-kubeconfig --region us-east-1 --name krishimitra-production
+        kubectl rollout undo deployment/krishimitra-frontend -n krishimitra-prod
+        kubectl rollout undo deployment/krishimitra-backend -n krishimitra-prod
+    
+    - name: Notify rollback
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: '⚠️ Production deployment failed. Rollback initiated.'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+### 🌊 **Blue-Green Deployment Strategy**
+
+```bash
+#!/bin/bash
+# scripts/blue-green-deploy.sh
+
+set -e
+
+NAMESPACE="krishimitra-prod"
+NEW_VERSION=$1
+CURRENT_VERSION=$(kubectl get deployment krishimitra-frontend -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2)
+
+echo "🔄 Starting Blue-Green deployment..."
+echo "Current version: $CURRENT_VERSION"
+echo "New version: $NEW_VERSION"
+
+# Step 1: Deploy new version (Green)
+echo "🟢 Deploying Green environment..."
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: krishimitra-frontend-green
+  namespace: $NAMESPACE
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: krishimitra-frontend
+      version: green
+  template:
+    metadata:
+      labels:
+        app: krishimitra-frontend
+        version: green
+    spec:
+      containers:
+      - name: frontend
+        image: krishimitra/frontend:$NEW_VERSION
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+EOF
+
+# Step 2: Wait for Green deployment to be ready
+echo "⏳ Waiting for Green deployment to be ready..."
+kubectl rollout status deployment/krishimitra-frontend-green -n $NAMESPACE --timeout=600s
+
+# Step 3: Run health checks
+echo "🏥 Running health checks..."
+GREEN_PODS=$(kubectl get pods -n $NAMESPACE -l app=krishimitra-frontend,version=green -o jsonpath='{.items[*].status.podIP}')
+
+for pod_ip in $GREEN_PODS; do
+  if ! curl -f http://$pod_ip:3000/health --max-time 10; then
+    echo "❌ Health check failed for pod $pod_ip"
+    exit 1
+  fi
+done
+
+echo "✅ All health checks passed"
+
+# Step 4: Run smoke tests against Green
+echo "💨 Running smoke tests..."
+kubectl port-forward -n $NAMESPACE deployment/krishimitra-frontend-green 8080:3000 &
+PORT_FORWARD_PID=$!
+sleep 5
+
+if ! npm run test:smoke -- --baseUrl=http://localhost:8080; then
+  echo "❌ Smoke tests failed"
+  kill $PORT_FORWARD_PID
+  exit 1
+fi
+
+kill $PORT_FORWARD_PID
+echo "✅ Smoke tests passed"
+
+# Step 5: Switch traffic to Green (update service selector)
+echo "🔄 Switching traffic to Green environment..."
+kubectl patch service krishimitra-frontend-service -n $NAMESPACE -p '{"spec":{"selector":{"version":"green"}}}'
+
+# Step 6: Wait and monitor
+echo "⏳ Monitoring for 5 minutes..."
+sleep 300
+
+# Step 7: Check error rates and performance
+ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{status=~'5..'}[5m])" | jq -r '.data.result[0].value[1] // 0')
+
+if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+  echo "❌ High error rate detected: $ERROR_RATE"
+  echo "🔙 Rolling back to Blue environment..."
+  kubectl patch service krishimitra-frontend-service -n $NAMESPACE -p '{"spec":{"selector":{"version":"blue"}}}'
+  exit 1
+fi
+
+# Step 8: Cleanup old Blue deployment
+echo "🧹 Cleaning up Blue environment..."
+kubectl delete deployment krishimitra-frontend-blue -n $NAMESPACE --ignore-not-found=true
+
+# Step 9: Label Green as new Blue for next deployment
+kubectl patch deployment krishimitra-frontend-green -n $NAMESPACE -p '{"spec":{"selector":{"matchLabels":{"version":"blue"}},"template":{"metadata":{"labels":{"version":"blue"}}}}}'
+kubectl patch deployment krishimitra-frontend-green -n $NAMESPACE --type merge -p '{"metadata":{"name":"krishimitra-frontend-blue"}}'
+
+echo "🎉 Blue-Green deployment completed successfully!"
+echo "New version $NEW_VERSION is now live in production"
+```
+
+### 📊 **Monitoring & Observability**
+
+#### **Prometheus Configuration**
+```yaml
+# monitoring/prometheus/values.yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+rule_files:
+  - "rules/*.yml"
+
+scrape_configs:
+  - job_name: 'krishimitra-frontend'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: krishimitra-frontend
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+
+  - job_name: 'krishimitra-backend'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: krishimitra-backend
+
+  - job_name: 'krishimitra-ml-services'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: krishimitra-ml-services
+```
+
+#### **Grafana Dashboards**
+```json
+{
+  "dashboard": {
+    "title": "KrishiMitra Production Metrics",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m])) by (service)",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "Response Time (95th percentile)",
+        "type": "graph", 
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))",
+            "legendFormat": "{{service}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{status=~'5..'}[5m])) / sum(rate(http_requests_total[5m]))",
+            "legendFormat": "Error Rate"
+          }
+        ],
+        "thresholds": [
+          {"value": 0.01, "colorMode": "critical"},
+          {"value": 0.05, "colorMode": "warning"}
+        ]
+      },
+      {
+        "title": "Active Users",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "sum(krishimitra_active_users)",
+            "legendFormat": "Active Users"
+          }
+        ]
+      },
+      {
+        "title": "Database Connections",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(pg_stat_activity_count) by (datname)",
+            "legendFormat": "{{datname}}"
+          }
+        ]
+      },
+      {
+        "title": "ML Model Inference Time",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(ml_inference_duration_seconds_bucket[5m])) by (le, model))",
+            "legendFormat": "{{model}}"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 🚨 **Alerting Rules**
+
+```yaml
+# monitoring/prometheus/rules/krishimitra-alerts.yml
+groups:
+- name: krishimitra-production-alerts
+  rules:
+  - alert: HighErrorRate
+    expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.01
+    for: 2m
+    labels:
+      severity: critical
+      service: krishimitra
+    annotations:
+      summary: "High error rate detected"
+      description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes"
+
+  - alert: HighResponseTime
+    expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1
+    for: 5m
+    labels:
+      severity: warning
+      service: krishimitra
+    annotations:
+      summary: "High response time"
+      description: "95th percentile response time is {{ $value }}s"
+
+  - alert: DatabaseConnectionHigh
+    expr: sum(pg_stat_activity_count) > 80
+    for: 5m
+    labels:
+      severity: warning
+      service: database
+    annotations:
+      summary: "High database connection count"
+      description: "Database has {{ $value }} active connections"
+
+  - alert: PodCrashLooping
+    expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Pod {{ $labels.pod }} is crash looping"
+      description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is restarting frequently"
+
+  - alert: MLModelLatencyHigh
+    expr: histogram_quantile(0.95, sum(rate(ml_inference_duration_seconds_bucket[5m])) by (le, model)) > 2
+    for: 3m
+    labels:
+      severity: warning
+      service: ml-services
+    annotations:
+      summary: "ML model {{ $labels.model }} has high latency"
+      description: "95th percentile inference time is {{ $value }}s for model {{ $labels.model }}"
+
+  - alert: DiskSpaceHigh
+    expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes > 0.85
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Disk space usage high on {{ $labels.instance }}"
+      description: "Disk usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+
+  - alert: CarbonCreditMintingFailed
+    expr: increase(blockchain_transaction_failed_total{operation="mint_credit"}[10m]) > 5
+    for: 2m
+    labels:
+      severity: critical
+      service: blockchain
+    annotations:
+      summary: "Carbon credit minting failures detected"
+      description: "{{ $value }} carbon credit minting transactions have failed in the last 10 minutes"
+```
+
+### 🔄 **Disaster Recovery**
+
+#### **Backup Strategy**
+```bash
+#!/bin/bash
+# scripts/backup-production.sh
+
+set -e
+
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+BACKUP_DIR="/backups/krishimitra/$TIMESTAMP"
+S3_BUCKET="krishimitra-backups"
+
+echo "🔄 Starting production backup at $TIMESTAMP"
+
+# Create backup directory
+mkdir -p $BACKUP_DIR
+
+# 1. Database Backup
+echo "📊 Backing up PostgreSQL database..."
+pg_dump $DATABASE_URL | gzip > $BACKUP_DIR/postgres_backup.sql.gz
+
+echo "📄 Backing up MongoDB..."
+mongodump --uri $MONGODB_URI --gzip --archive=$BACKUP_DIR/mongodb_backup.gz
+
+# 2. Redis Backup
+echo "💾 Backing up Redis..."
+redis-cli --rdb $BACKUP_DIR/redis_backup.rdb
+
+# 3. Kubernetes Configuration Backup
+echo "⚙️ Backing up Kubernetes configurations..."
+kubectl get all --all-namespaces -o yaml > $BACKUP_DIR/k8s_all_resources.yaml
+kubectl get configmaps --all-namespaces -o yaml > $BACKUP_DIR/k8s_configmaps.yaml
+kubectl get secrets --all-namespaces -o yaml > $BACKUP_DIR/k8s_secrets.yaml
+
+# 4. Application Configuration Backup
+echo "📋 Backing up application configurations..."
+cp -r /opt/krishimitra/config $BACKUP_DIR/app_config
+
+# 5. ML Models Backup
+echo "🧠 Backing up ML models..."
+aws s3 sync s3://krishimitra-ml-models $BACKUP_DIR/ml_models/
+
+# 6. User Data Backup (Critical files only)
+echo "👥 Backing up critical user data..."
+aws s3 sync s3://krishimitra-user-data $BACKUP_DIR/user_data/ --exclude "*" --include "*.json"
+
+# 7. Compress and encrypt backup
+echo "🔐 Compressing and encrypting backup..."
+tar -czf $BACKUP_DIR.tar.gz -C /backups/krishimitra $TIMESTAMP
+gpg --symmetric --cipher-algo AES256 --batch --yes --passphrase-file /etc/backup/passphrase $BACKUP_DIR.tar.gz
+
+# 8. Upload to S3 (multiple regions)
+echo "☁️ Uploading to S3..."
+aws s3 cp $BACKUP_DIR.tar.gz.gpg s3://$S3_BUCKET/production/
+aws s3 cp $BACKUP_DIR.tar.gz.gpg s3://$S3_BUCKET-eu/production/ --region eu-west-1
+aws s3 cp $BACKUP_DIR.tar.gz.gpg s3://$S3_BUCKET-ap/production/ --region ap-south-1
+
+# 9. Cleanup local backup files (keep encrypted version)
+rm -rf $BACKUP_DIR
+rm $BACKUP_DIR.tar.gz
+
+# 10. Update backup inventory
+echo "$TIMESTAMP,$BACKUP_DIR.tar.gz.gpg,$(stat -c%s $BACKUP_DIR.tar.gz.gpg)" >> /var/log/krishimitra-backups.log
+
+# 11. Cleanup old backups (keep last 30 days)
+find /var/log/ -name "krishimitra-backups.log" -mtime +30 -delete
+aws s3 ls s3://$S3_BUCKET/production/ | awk '{print $4}' | head -n -30 | xargs -I {} aws s3 rm s3://$S3_BUCKET/production/{}
+
+echo "✅ Backup completed successfully: $BACKUP_DIR.tar.gz.gpg"
+```
+
+#### **Disaster Recovery Plan**
+```bash
+#!/bin/bash
+# scripts/disaster-recovery.sh
+
+set -e
+
+RECOVERY_MODE=$1  # Options: partial, full, rollback
+BACKUP_DATE=$2    # Format: YYYYMMDD_HHMMSS
+
+echo "🚨 Initiating disaster recovery: $RECOVERY_MODE mode"
+
+case $RECOVERY_MODE in
+  "partial")
+    echo "🔄 Partial recovery - Database only"
+    
+    # Stop application services
+    kubectl scale deployment krishimitra-backend --replicas=0 -n krishimitra-prod
+    kubectl scale deployment krishimitra-frontend --replicas=0 -n krishimitra-prod
+    
+    # Restore database from backup
+    aws s3 cp s3://krishimitra-backups/production/backup_$BACKUP_DATE.tar.gz.gpg /tmp/
+    gpg --decrypt --batch --yes --passphrase-file /etc/backup/passphrase /tmp/backup_$BACKUP_DATE.tar.gz.gpg | tar -xz -C /tmp/
+    
+    # Restore PostgreSQL
+    dropdb krishimitra_prod --if-exists
+    createdb krishimitra_prod
+    gunzip -c /tmp/$BACKUP_DATE/postgres_backup.sql.gz | psql krishimitra_prod
+    
+    # Restore MongoDB
+    mongorestore --uri $MONGODB_URI --gzip --archive=/tmp/$BACKUP_DATE/mongodb_backup.gz --drop
+    
+    # Restart services
+    kubectl scale deployment krishimitra-backend --replicas=5 -n krishimitra-prod
+    kubectl scale deployment krishimitra-frontend --replicas=10 -n krishimitra-prod
+    ;;
+    
+  "full")
+    echo "🔄 Full disaster recovery"
+    
+    # 1. Restore infrastructure
+    cd infrastructure/terraform
+    terraform apply -auto-approve
+    
+    # 2. Restore Kubernetes cluster
+    aws eks update-kubeconfig --region us-east-1 --name krishimitra-production
+    kubectl apply -f /tmp/$BACKUP_DATE/k8s_all_resources.yaml
+    
+    # 3. Restore databases (same as partial)
+    # ... (database restoration steps)
+    
+    # 4. Restore application configurations
+    kubectl apply -f /tmp/$BACKUP_DATE/k8s_configmaps.yaml
+    kubectl apply -f /tmp/$BACKUP_DATE/k8s_secrets.yaml
+    
+    # 5. Restore ML models
+    aws s3 sync /tmp/$BACKUP_DATE/ml_models/ s3://krishimitra-ml-models
+    
+    # 6. Health check and validation
+    sleep 60
+    kubectl get pods -n krishimitra-prod
+    npm run test:smoke
+    ;;
+    
+  "rollback")
+    echo "🔙 Rolling back to previous version"
+    
+    # Rollback deployments
+    kubectl rollout undo deployment/krishimitra-frontend -n krishimitra-prod
+    kubectl rollout undo deployment/krishimitra-backend -n krishimitra-prod
+    kubectl rollout undo deployment/krishimitra-ml-services -n krishimitra-prod
+    
+    # Wait for rollback completion
+    kubectl rollout status deployment/krishimitra-frontend -n krishimitra-prod
+    kubectl rollout status deployment/krishimitra-backend -n krishimitra-prod
+    kubectl rollout status deployment/krishimitra-ml-services -n krishimitra-prod
+    ;;
+    
+  *)
+    echo "❌ Invalid recovery mode. Use: partial, full, or rollback"
+    exit 1
+    ;;
+esac
+
+# Post-recovery verification
+echo "🔍 Running post-recovery verification..."
+
+# Check all pods are running
+FAILED_PODS=$(kubectl get pods -n krishimitra-prod --field-selector=status.phase!=Running | wc -l)
+if [ $FAILED_PODS -gt 1 ]; then  # 1 for header line
+  echo "❌ Some pods are not running:"
+  kubectl get pods -n krishimitra-prod --field-selector=status.phase!=Running
+  exit 1
+fi
+
+# Check database connectivity
+if ! pg_isready -h $DB_HOST -p $DB_PORT -U $DB_USER; then
+  echo "❌ Database connectivity check failed"
+  exit 1
+fi
+
+# Run smoke tests
+if ! npm run test:smoke; then
+  echo "❌ Smoke tests failed"
+  exit 1
+fi
+
+# Check ML services
+ML_HEALTH=$(curl -s http://ml-service:8001/health | jq -r '.status')
+if [ "$ML_HEALTH" != "healthy" ]; then
+  echo "❌ ML services health check failed"
+  exit 1
+fi
+
+echo "✅ Disaster recovery completed successfully"
+echo "📊 System status: All services are operational"
+
+# Notify team
+curl -X POST -H 'Content-type: application/json' \
+  --data "{\"text\":\"🚨 Disaster recovery completed for KrishiMitra production. Mode: $RECOVERY_MODE\"}" \
+  $SLACK_WEBHOOK_URL
+```
+
+### 🔐 **Production Security Hardening**
+
+```bash
+#!/bin/bash
+# scripts/security-hardening.sh
+
+echo "🔒 Applying production security hardening..."
+
+# 1. Network Policies
+kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: krishimitra-network-policy
+  namespace: krishimitra-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: krishimitra-frontend
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 3000
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: krishimitra-backend
+    ports:
+    - protocol: TCP
+      port: 8000
+EOF
+
+# 2. Pod Security Standards
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krishimitra-prod
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+EOF
+
+# 3. RBAC Configuration
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: krishimitra-prod
+  name: krishimitra-app-role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: krishimitra-app-binding
+  namespace: krishimitra-prod
+subjects:
+- kind: ServiceAccount
+  name: krishimitra-service-account
+  namespace: krishimitra-prod
+roleRef:
+  kind: Role
+  name: krishimitra-app-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+# 4. Security Context and Resource Limits
+kubectl patch deployment krishimitra-frontend -n krishimitra-prod -p '
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "fsGroup": 10001
+        },
+        "containers": [{
+          "name": "frontend",
+          "securityContext": {
+            "allowPrivilegeEscalation": false,
+            "readOnlyRootFilesystem": true,
+            "capabilities": {
+              "drop": ["ALL"]
+            }
+          },
+          "resources": {
+            "limits": {
+              "memory": "512Mi",
+              "cpu": "500m"
+            },
+            "requests": {
+              "memory": "256Mi",
+              "cpu": "100m"
+            }
+          }
+        }]
+      }
+    }
+  }
+}'
+
+echo "✅ Security hardening completed"
+```
+
+This comprehensive deployment strategy ensures the KrishiMitra platform can scale globally while maintaining the highest standards of reliability, security, and performance. The platform is ready to serve millions of farmers worldwide with enterprise-grade infrastructure. 🚀🌾
+
+</details>
+
+***
+
+## 📚 Documentation
+
+<details>
+<summary>📖 <strong>Comprehensive Documentation</strong></summary>
+
+### 📋 **Documentation Structure**
+
+Our documentation follows a **docs-as-code** approach with multiple formats to serve different audiences:
+
+```
+📁 docs/
+├── 📁 api/                    # API Documentation
+│   ├── openapi.yaml           # OpenAPI 3.0 specification
+│   ├── graphql-schema.md      # GraphQL schema documentation
+│   ├── websocket-api.md       # Real-time WebSocket API
+│   └── authentication.md     # Auth flows and security
+├── 📁 architecture/           # System Architecture
+│   ├── overview.md            # High-level architecture
+│   ├── microservices.md       # Service breakdown
+│   ├── data-flow.md           # Data flow diagrams
+│   └── security.md            # Security architecture
+├── 📁 user-guides/           # End User Documentation
+│   ├── farmer-guide.md        # Farmer user manual
+│   ├── verifier-guide.md      # Verifier workflows
+│   ├── admin-guide.md         # Admin panel guide
+│   └── mobile-app.md          # Mobile app usage
+├── 📁 developer/             # Developer Documentation
+│   ├── getting-started.md     # Quick start guide
+│   ├── contributing.md        # Contribution guidelines
+│   ├── coding-standards.md    # Code style guide
+│   └── troubleshooting.md     # Common issues
+├── 📁 deployment/            # Operations Documentation
+│   ├── production.md          # Production deployment
+│   ├── monitoring.md          # Monitoring setup
+│   ├── backup-recovery.md     # DR procedures
+│   └── scaling.md             # Scaling guidelines
+└── 📁 integrations/          # Third-party Integrations
+    ├── government-apis.md     # Government API integration
+    ├── payment-gateways.md    # Payment processing
+    ├── satellite-providers.md # Satellite data APIs
+    └── blockchain.md          # Blockchain integration
+```
+
+### 🔗 **Interactive API Documentation**
+
+We use **OpenAPI 3.0** with **Swagger UI** for interactive API documentation:
+
+```yaml
+# docs/api/openapi.yaml
+openapi: 3.0.3
+info:
+  title: KrishiMitra API
+  description: |
+    # KrishiMitra Platform API
+
+    The KrishiMitra API provides comprehensive access to all platform features including:
+    
+    - **Farm Management**: Register and manage agricultural operations
+    - **IoT Integration**: Real-time sensor data collection and analysis
+    - **AI/ML Services**: Crop prediction, disease detection, and analytics
+    - **Carbon Credits**: Blockchain-based carbon credit management
+    - **Weather & Satellite**: Environmental data and satellite imagery analysis
+    
+    ## Authentication
+    
+    All API endpoints require authentication using JWT Bearer tokens. 
+    
+    ## Rate Limiting
+    
+    API calls are rate-limited to 1000 requests per hour per user.
+    
+    ## Error Handling
+    
+    The API uses conventional HTTP response codes and returns detailed error messages in JSON format.
+    
+  version: 1.0.0
+  contact:
+    name: KrishiMitra API Support
+    url: https://docs.krishimitra.com
+    email: api-support@krishimitra.com
+  license:
+    name: MIT License
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.krishimitra.com/v1
+    description: Production server
+  - url: https://staging-api.krishimitra.com/v1
+    description: Staging server
+  - url: http://localhost:8000/api/v1
+    description: Development server
+
+security:
+  - BearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: User login
+      description: Authenticate user and return JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: farmer@krishimitra.com
+              password: SecurePassword123!
+              rememberMe: true
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                user:
+                  id: usr_1234567890
+                  email: farmer@krishimitra.com
+                  firstName: Ram
+                  lastName: Kumar
+                  role: FARMER
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /farms:
+    get:
+      tags:
+        - Farm Management
+      summary: List user farms
+      description: Retrieve all farms owned by the authenticated user
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          description: Filter farms by status
+          schema:
+            type: string
+            enum: [active, inactive, pending_verification]
+      responses:
+        '200':
+          description: List of farms retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FarmListResponse'
+    
+    post:
+      tags:
+        - Farm Management
+      summary: Create new farm
+      description: Register a new farm for the authenticated user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFarmRequest'
+            example:
+              name: Green Valley Farm
+              location: Ludhiana, Punjab, India
+              area: 5.2
+              coordinates:
+                lat: 30.9010
+                lng: 75.8573
+              soilType: LOAM
+              irrigationType: [DRIP, SPRINKLER]
+      responses:
+        '201':
+          description: Farm created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Farm'
+
+  /ml/predict/yield:
+    post:
+      tags:
+        - AI/ML Services
+      summary: Predict crop yield
+      description: |
+        Generate crop yield prediction using advanced machine learning models.
+        
+        The prediction uses multiple data sources:
+        - Historical farm data
+        - Current weather conditions
+        - Soil characteristics
+        - Satellite imagery analysis
+        - Crop management practices
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/YieldPredictionRequest'
+      responses:
+        '200':
+          description: Yield prediction generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YieldPredictionResponse'
+              example:
+                prediction: 4.8
+                unit: tonnes_per_hectare
+                confidence: 0.94
+                confidenceInterval:
+                  lower: 4.2
+                  upper: 5.4
+                factors:
+                  - name: soil_health
+                    importance: 0.35
+                    value: 0.78
+                  - name: weather_conditions
+                    importance: 0.28
+                    value: 0.82
+                modelUsed: ensemble_xgboost_lstm
+                predictionDate: '2025-09-05T00:11:00Z'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          description: User email address
+        password:
+          type: string
+          minLength: 8
+          description: User password
+        rememberMe:
+          type: boolean
+          default: false
+          description: Keep user logged in for extended period
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT access token
+        refreshToken:
+          type: string
+          description: JWT refresh token
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique user identifier
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+        lastName:
+          type: string
+        role:
+          type: string
+          enum: [FARMER, VERIFIER, BUYER, ADMIN]
+        avatar:
+          type: string
+          format: uri
+          nullable: true
+        emailVerified:
+          type: boolean
+        phoneVerified:
+          type: boolean
+
+    Farm:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique farm identifier
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        location:
+          type: string
+          description: Human-readable farm location
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+        area:
+          type: number
+          minimum: 0.01
+          description: Farm area in hectares
+        soilType:
+          $ref: '#/components/schemas/SoilType'
+        irrigationType:
+          type: array
+          items:
+            $ref: '#/components/schemas/IrrigationType'
+        status:
+          type: string
+          enum: [active, inactive, pending_verification]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Coordinates:
+      type: object
+      required:
+        - lat
+        - lng
+      properties:
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+          description: Latitude in decimal degrees
+        lng:
+          type: number
+          minimum: -180
+          maximum: 180
+          description: Longitude in decimal degrees
+
+    SoilType:
+      type: string
+      enum:
+        - CLAY
+        - SANDY
+        - LOAM
+        - SILT
+        - PEAT
+        - CHALK
+        - BLACK_COTTON
+        - ALLUVIAL
+        - RED
+        - LATERITE
+
+    IrrigationType:
+      type: string
+      enum:
+        - DRIP
+        - SPRINKLER
+        - FLOOD
+        - FURROW
+        - MICRO_SPRINKLER
+        - RAINFED
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      description: Page number for pagination
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+
+    LimitParam:
+      name: limit
+      in: query
+      description: Number of items per page
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Bad request - Invalid input parameters
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Bad Request
+              message:
+                type: string
+                example: Invalid input parameters
+              errors:
+                type: array
+                items:
+                  type: string
+                example:
+                  - "email is required"
+                  - "password must be at least 8 characters"
+
+    Unauthorized:
+      description: Unauthorized - Invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Unauthorized
+              message:
+                type: string
+                example: Invalid or expired authentication token
+```
+
+### 📱 **User Guide Examples**
+
+#### **Farmer User Guide**
+```markdown
+# KrishiMitra Farmer Guide
+
+## Welcome to KrishiMitra! 🌾
+
+This guide will help you get the most out of the KrishiMitra platform to improve your farming operations and generate carbon credits.
+
+### Getting Started
+
+#### 1. Account Setup
+1. **Download the App**
+   - Android: [Google Play Store](https://play.google.com/store/apps/details?id=com.krishimitra.app)
+   - iOS: [Apple App Store](https://apps.apple.com/app/krishimitra/id123456789)
+   - Web: Visit [krishimitra.com](https://krishimitra.com)
+
+2. **Registration Process**
+   - Enter your mobile number
+   - Verify with OTP
+   - Complete profile information
+   - Upload identity documents (optional but recommended)
+
+3. **Language Selection**
+   - Choose from 22 Indian languages
+   - हिंदी, বাংলা, తెలుగు, मराठी, தமிழ், ગુજરાતી, and more!
+
+#### 2. Farm Registration
+
+**Step-by-Step Farm Setup:**
+
+1. **Basic Farm Information**
+   ```
+   Farm Name: [Your Farm Name]
+   Location: [Village, District, State]
+   Total Area: [in hectares/acres]
+   Soil Type: [Select from dropdown]
+   ```
+
+2. **Farm Mapping**
+   - Use GPS to mark your farm boundaries
+   - Take photos of your farm
+   - Mark important locations (wells, storage, etc.)
+
+3. **Crop Information**
+   - Current crops grown
+   - Seasonal patterns (Kharif/Rabi/Zaid)
+   - Farming methods (Organic/Conventional/Mixed)
+
+### Core Features
+
+#### 🌡️ **Weather & Alerts**
+- **Real-time Weather Data**
+  - Current temperature, humidity, rainfall
+  - 7-day weather forecast
+  - Extreme weather alerts
+  
+- **Smart Notifications**
+  - Rain predictions (receive SMS/WhatsApp alerts)
+  - Best planting/harvesting times
+  - Disease outbreak warnings in your area
+
+#### 📊 **Farm Analytics**
+- **Crop Health Monitoring**
+  - Take photos of your crops
+  - AI-powered disease detection
+  - Growth stage tracking
+  - Yield predictions
+
+- **Soil Health Dashboard**
+  - Connect IoT sensors (optional)
+  - Soil nutrient analysis
+  - pH and moisture monitoring
+  - Fertilizer recommendations
+
+#### 💰 **Carbon Credit Program**
+
+**How to Earn Carbon Credits:**
+
+1. **Sustainable Practice Adoption**
+   - Switch to organic farming
+   - Implement agroforestry (plant trees)
+   - Adopt water-efficient irrigation
+   - Use renewable energy
+
+2. **Documentation & Verification**
+   - Record all farming activities in the app
+   - Upload photos and videos as proof
+   - Schedule verification visits
+   - Maintain proper records
+
+3. **Credit Generation & Trading**
+   - Earn credits based on verified carbon sequestration
+   - Credits are tokenized on blockchain
+   - Sell in the marketplace
+   - Receive payments directly in your bank account
+
+**Earning Potential:**
+- Rice farming: ₹500-2,000 per acre annually
+- Agroforestry: ₹1,500-5,000 per acre annually
+- Solar adoption: ₹3,000-10,000 one-time payment
+
+### Advanced Features
+
+#### 🤖 **AI Assistant**
+Use voice commands in your local language:
+
+**Hindi Examples:**
+- "मौसम कैसा रहेगा?" (How will the weather be?)
+- "फसल की बीमारी देखो" (Check crop disease)
+- "खाद की सिफारिश दो" (Give fertilizer recommendation)
+
+**Regional Language Support:**
+- Bengali: "আবহাওয়া কেমন থাকবে?"
+- Telugu: "వాతావరణం ఎలా ఉంటుంది?"
+- Tamil: "வானிலை எப்படி இருக்கும்?"
+
+#### 📱 **WhatsApp Integration**
+Get updates directly on WhatsApp:
+- Send "WEATHER" to get today's forecast
+- Send "PRICE" + crop name for market prices
+- Send photo of diseased crop for instant AI analysis
+
+### Troubleshooting
+
+#### Common Issues & Solutions
+
+**Q: App is running slowly**
+A: 
+- Check internet connection
+- Clear app cache: Settings > Apps > KrishiMitra > Storage > Clear Cache
+- Update to latest version
+
+**Q: GPS location not working**
+A: 
+- Enable location permissions
+- Make sure GPS is turned on
+- Try using in open area away from buildings
+
+**Q: Camera not detecting diseases properly**
+A:
+- Clean camera lens
+- Take photos in good lighting
+- Hold phone steady and close to affected area
+- Make sure the diseased part is clearly visible
+
+### Support
+
+#### Getting Help
+- **In-App Help**: Tap "Help" icon in any screen
+- **WhatsApp Support**: +91-XXXX-XXXXXX
+- **Toll-Free Helpline**: 1800-XXX-XXXX (Available 24/7)
+- **Email**: farmer-support@krishimitra.com
+
+#### Training Programs
+- **Free Online Training**: Available in app under "Learning" section
+- **Village Workshops**: Check "Events" section for local programs
+- **Peer Learning**: Connect with other farmers in your area
+
+### Success Stories
+
+> **Ram Kumar, Punjab**
+> *"मैंने KrishiMitra के साथ अपनी फसल की पैदावार 35% बढ़ाई और carbon credits से साल में ₹15,000 अतिरिक्त कमाए।"*
+
+> **Priya Devi, Tamil Nadu** 
+> *"AI disease detection ने मेरी cotton crop को bachaya। समय पर पता लग गया और treatment करवा सकी।"*
+
+---
+
+**Need more help? We're here for you 24/7!** 🤝
+```
+
+### 🔧 **Developer Documentation**
+
+#### **API Integration Guide**
+```markdown
+# KrishiMitra API Integration Guide
+
+## Quick Start
+
+### 1. Authentication
+
+First, obtain an API key from the developer portal:
+
+```
+// Get access token
+const response = await fetch('https://api.krishimitra.com/v1/auth/login', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    email: 'your-email@example.com',
+    password: 'your-password'
+  })
+});
+
+const { token } = await response.json();
+
+// Use token in subsequent requests
+const apiCall = await fetch('https://api.krishimitra.com/v1/farms', {
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  }
+});
+```
+
+### 2. Farm Management
+
+#### Create a Farm
+```
+const farmData = {
+  name: 'Green Valley Farm',
+  location: 'Ludhiana, Punjab, India',
+  area: 5.2,
+  coordinates: {
+    lat: 30.9010,
+    lng: 75.8573
+  },
+  soilType: 'LOAM',
+  irrigationType: ['DRIP', 'SPRINKLER']
+};
+
+const response = await fetch('https://api.krishimitra.com/v1/farms', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify(farmData)
+});
+
+const farm = await response.json();
+console.log('Farm created:', farm);
+```
+
+#### Get Farm Analytics
+```
+const farmId = 'farm_123456789';
+const analyticsResponse = await fetch(
+  `https://api.krishimitra.com/v1/analytics/farms/${farmId}?period=30d`,
+  {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  }
+);
+
+const analytics = await analyticsResponse.json();
+console.log('Farm Analytics:', analytics);
+```
+
+### 3. AI/ML Integration
+
+#### Crop Yield Prediction
+```
+const predictionRequest = {
+  farmId: 'farm_123456789',
+  cropType: 'rice',
+  season: 'KHARIF',
+  features: {
+    soilHealth: 0.78,
+    irrigationEfficiency: 0.85,
+    weatherConditions: 0.72,
+    previousYield: 4.2
+  }
+};
+
+const mlResponse = await fetch('https://api.krishimitra.com/v1/ml/predict/yield', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify(predictionRequest)
+});
+
+const prediction = await mlResponse.json();
+console.log('Yield Prediction:', prediction);
+```
+
+#### Disease Detection
+```
+const formData = new FormData();
+formData.append('image', imageFile);
+formData.append('cropType', 'rice');
+
+const diseaseResponse = await fetch('https://api.krishimitra.com/v1/ml/detect/disease', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`
+  },
+  body: formData
+});
+
+const detection = await diseaseResponse.json();
+console.log('Disease Detection:', detection);
+```
+
+### 4. IoT Data Integration
+
+#### Submit Sensor Data
+```
+const sensorData = {
+  deviceId: 'sensor_001',
+  timestamp: new Date().toISOString(),
+  temperature: 28.5,
+  humidity: 65.2,
+  soilMoisture: 45.8,
+  soilPH: 6.8,
+  location: {
+    lat: 30.9010,
+    lng: 75.8573
+  }
+};
+
+const iotResponse = await fetch('https://api.krishimitra.com/v1/iot/data', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify(sensorData)
+});
+
+const result = await iotResponse.json();
+console.log('Data submitted:', result);
+```
+
+### 5. WebSocket Real-time Data
+
+```
+const ws = new WebSocket('wss://api.krishimitra.com/v1/ws?token=' + token);
+
+ws.onopen = () => {
+  console.log('Connected to KrishiMitra WebSocket');
+  
+  // Subscribe to farm updates
+  ws.send(JSON.stringify({
+    action: 'subscribe',
+    channel: 'farm-updates',
+    farmId: 'farm_123456789'
+  }));
+};
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Real-time update:', data);
+  
+  switch(data.type) {
+    case 'weather-alert':
+      handleWeatherAlert(data.payload);
+      break;
+    case 'sensor-data':
+      updateSensorDisplay(data.payload);
+      break;
+    case 'disease-alert':
+      showDiseaseWarning(data.payload);
+      break;
+  }
+};
+
+ws.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+```
+
+### 6. Error Handling
+
+```
+class KrishiMitraAPI {
+  constructor(apiKey) {
+    this.apiKey = apiKey;
+    this.baseURL = 'https://api.krishimitra.com/v1';
+  }
+
+  async request(endpoint, options = {}) {
+    const url = `${this.baseURL}${endpoint}`;
+    const config = {
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+      },
+      ...options
+    };
+
+    try {
+      const response = await fetch(url, config);
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new KrishiMitraError(error.message, response.status, error);
+      }
+
+      return await response.json();
+    } catch (error) {
+      if (error instanceof KrishiMitraError) {
+        throw error;
+      }
+      throw new KrishiMitraError('Network error occurred', 0, error);
+    }
+  }
+
+  async getFarms(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return this.request(`/farms?${params}`);
+  }
+
+  async createFarm(farmData) {
+    return this.request('/farms', {
+      method: 'POST',
+      body: JSON.stringify(farmData)
+    });
+  }
+}
+
+class KrishiMitraError extends Error {
+  constructor(message, statusCode, originalError) {
+    super(message);
+    this.name = 'KrishiMitraError';
+    this.statusCode = statusCode;
+    this.originalError = originalError;
+  }
+}
+
+// Usage
+const api = new KrishiMitraAPI('your-api-key');
+
+try {
+  const farms = await api.getFarms({ status: 'active' });
+  console.log('Active farms:', farms);
+} catch (error) {
+  if (error instanceof KrishiMitraError) {
+    console.error(`API Error (${error.statusCode}):`, error.message);
+  } else {
+    console.error('Unexpected error:', error);
+  }
+}
+```
+
+### 7. Rate Limiting & Best Practices
+
+```
+class RateLimitedAPI {
+  constructor(apiKey, maxRequestsPerSecond = 10) {
+    this.api = new KrishiMitraAPI(apiKey);
+    this.requestQueue = [];
+    this.isProcessing = false;
+    this.maxRequestsPerSecond = maxRequestsPerSecond;
+    this.requestInterval = 1000 / maxRequestsPerSecond;
+  }
+
+  async request(endpoint, options) {
+    return new Promise((resolve, reject) => {
+      this.requestQueue.push({ endpoint, options, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.isProcessing || this.requestQueue.length === 0) {
+      return;
+    }
+
+    this.isProcessing = true;
+
+    while (this.requestQueue.length > 0) {
+      const { endpoint, options, resolve, reject } = this.requestQueue.shift();
+
+      try {
+        const result = await this.api.request(endpoint, options);
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      }
+
+      // Wait before next request to respect rate limits
+      await new Promise(resolve => setTimeout(resolve, this.requestInterval));
+    }
+
+    this.isProcessing = false;
+  }
+}
+
+// Usage with rate limiting
+const rateLimitedApi = new RateLimitedAPI('your-api-key', 5); // 5 requests per second
+
+// These will be automatically queued and rate-limited
+const promises = [
+  rateLimitedApi.request('/farms'),
+  rateLimitedApi.request('/weather'),
+  rateLimitedApi.request('/analytics/dashboard'),
+  // ... more requests
+];
+
+const results = await Promise.all(promises);
+```
+
+### 8. Webhooks
+
+Set up webhooks to receive real-time notifications:
+
+```
+// Express.js webhook handler
+const express = require('express');
+const crypto = require('crypto');
+const app = express();
+
+app.use(express.json());
+
+// Webhook endpoint
+app.post('/webhooks/krishimitra', (req, res) => {
+  const signature = req.headers['x-krishimitra-signature'];
+  const body = JSON.stringify(req.body);
+  
+  // Verify webhook signature
+  const expectedSignature = crypto
+    .createHmac('sha256', process.env.WEBHOOK_SECRET)
+    .update(body)
+    .digest('hex');
+  
+  if (`sha256=${expectedSignature}` !== signature) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  const { event, data } = req.body;
+
+  switch (event) {
+    case 'farm.created':
+      console.log('New farm created:', data.farm);
+      break;
+    
+    case 'carbon-credit.issued':
+      console.log('Carbon credit issued:', data.credit);
+      notifyFarmer(data.credit.farmerId, 'New carbon credit issued!');
+      break;
+    
+    case 'disease.detected':
+      console.log('Disease detected:', data.detection);
+      sendUrgentAlert(data.detection.farmId, data.detection.disease);
+      break;
+    
+    case 'weather.alert':
+      console.log('Weather alert:', data.alert);
+      broadcastWeatherAlert(data.alert);
+      break;
+  }
+
+  res.status(200).send('OK');
+});
+
+app.listen(3000, () => {
+  console.log('Webhook server running on port 3000');
+});
+```
+
+This comprehensive documentation ensures developers can easily integrate with the KrishiMitra platform and farmers can maximize the benefits of sustainable agriculture technology! 📚🌾
+```
+
+</details>
+
+***
+
+## 🤝 Contributing
+
+<details>
+<summary>👥 <strong>Join Our Mission</strong></summary>
+
+### 🌟 **Welcome Contributors!**
+
+We're building something revolutionary for global agriculture, and we'd love your help! Whether you're a seasoned developer, a domain expert, or just passionate about sustainable farming, there's a place for you in the KrishiMitra community.
+
+### 🎯 **Our Impact Goal**
+
+By contributing to KrishiMitra, you're helping:
+- **Empower 100M+ smallholder farmers** globally
+- **Generate $10B+ in carbon credits** for climate action
+- **Increase crop yields by 30%** through AI-driven insights
+- **Create sustainable livelihoods** for rural communities
+- **Combat climate change** through technology
+
+### 🚀 **How to Contribute**
+
+#### **1. Code Contributions**
+
+We welcome contributions across our entire technology stack:
+
+**Frontend (React/Next.js)**
+- UI/UX improvements
+- Performance optimizations
+- Accessibility enhancements
+- Mobile responsiveness
+- Internationalization
+
+**Backend (Node.js/Python)**
+- API endpoint development
+- Database optimization
+- Security enhancements
+- Performance improvements
+- Integration development
+
+**AI/ML (Python/TensorFlow)**
+- Model improvements
+- New algorithm implementations
+- Data pipeline optimization
+- Model deployment automation
+- Research collaboration
+
+**Mobile (React Native)**
+- Feature development
+- Platform-specific optimizations
+- Offline functionality
+- Push notification improvements
+- Camera/sensor integration
+
+**Infrastructure (DevOps)**
+- Kubernetes configurations
+- CI/CD pipeline improvements
+- Monitoring and alerting
+- Security hardening
+- Scalability enhancements
+
+#### **2. Non-Code Contributions**
+
+**Documentation**
+- API documentation improvements
+- User guide translations
+- Video tutorials creation
+- Blog post writing
+- Technical writing
+
+**Design & UX**
+- UI/UX design mockups
+- User experience research
+- Accessibility audits
+- Brand design elements
+- Mobile app design
+
+**Testing & Quality Assurance**
+- Manual testing
+- Test case creation
+- Bug reporting
+- Performance testing
+- Security testing
+
+**Community & Outreach**
+- Community management
+- Social media content
+- Conference presentations
+- Workshop facilitation
+- Partnership development
+
+### 📋 **Contribution Process**
+
+#### **Getting Started**
+
+1. **Fork the Repository**
+   ```bash
+   # Fork on GitHub, then clone your fork
+   git clone https://github.com/YOUR_USERNAME/krishimitra-platform.git
+   cd krishimitra-platform
+   
+   # Add upstream remote
+   git remote add upstream https://github.com/krishimitra/platform.git
+   ```
+
+2. **Set Up Development Environment**
+   ```bash
+   # Install dependencies
+   npm run install:all
+   
+   # Set up environment
+   cp .env.example .env
+   # Edit .env with your settings
+   
+   # Start development environment
+   npm run setup:dev
+   ```
+
+3. **Create Feature Branch**
+   ```bash
+   # Always create from latest main
+   git checkout main
+   git pull upstream main
+   git checkout -b feature/your-amazing-feature
+   ```
+
+#### **Development Workflow**
+
+1. **Make Your Changes**
+   - Write clean, readable code
+   - Follow our coding standards
+   - Add appropriate tests
+   - Update documentation
+
+2. **Test Your Changes**
+   ```bash
+   # Run all tests
+   npm run test
+   
+   # Run specific test suites
+   npm run test:unit
+   npm run test:integration
+   npm run test:e2e
+   
+   # Check code quality
+   npm run lint
+   npm run type-check
+   ```
+
+3. **Commit Your Work**
+   ```bash
+   # Stage your changes
+   git add .
+   
+   # Commit with conventional format
+   git commit -m "feat(api): add crop disease prediction endpoint
+   
+   - Implement YOLOv8-based disease detection
+   - Add confidence scoring and recommendations  
+   - Include support for 15 common crop diseases
+   - Add comprehensive test coverage
+   
+   Closes #123"
+   ```
+
+4. **Keep Branch Updated**
+   ```bash
+   # Regularly sync with upstream
+   git fetch upstream
+   git rebase upstream/main
+   ```
+
+5. **Push and Create PR**
+   ```bash
+   # Push to your fork
+   git push origin feature/your-amazing-feature
+   
+   # Create pull request on GitHub
+   # Fill out the PR template completely
+   ```
+
+### 🎯 **Contribution Guidelines**
+
+#### **Code Quality Standards**
+
+**TypeScript/JavaScript**
+```typescript
+// ✅ Good: Clear, typed, documented
+interface FarmAnalytics {
+  farmId: string;
+  yieldPrediction: number;
+  carbonPotential: number;
+  riskFactors: RiskFactor[];
+}
+
+/**
+ * Calculate comprehensive farm analytics including yield prediction,
+ * carbon sequestration potential, and risk assessment.
+ * 
+ * @param farmData - Farm characteristics and historical data
+ * @param weatherData - Current and forecasted weather conditions
+ * @returns Promise resolving to complete analytics report
+ */
+const calculateFarmAnalytics = async (
+  farmData: FarmData,
+  weatherData: WeatherData
+): Promise<FarmAnalytics> => {
+  try {
+    const prediction = await mlService.predictYield(farmData, weatherData);
+    const carbonPotential = await carbonService.estimatePotential(farmData);
+    const risks = await riskService.assessRisks(farmData, weatherData);
+    
+    return {
+      farmId: farmData.id,
+      yieldPrediction: prediction.value,
+      carbonPotential: carbonPotential.annual,
+      riskFactors: risks
+    };
+  } catch (error) {
+    logger.error('Farm analytics calculation failed', { farmData, error });
+    throw new AnalyticsError('Unable to calculate farm analytics', error);
+  }
+};
+
+// ❌ Bad: Unclear, untyped, undocumented
+const calc = (f, w) => {
+  const p = ml.predict(f, w);
+  const c = carbon.calc(f);
+  return { p, c };
+};
+```
+
+**Python**
+```python
+# ✅ Good: Well-documented, typed, error-handled
+from typing import Dict, List, Optional, Tuple
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass
+
+@dataclass
+class CropPrediction:
+    """
+    Crop yield prediction result with confidence metrics.
+    
+    Attributes:
+        yield_estimate: Predicted yield in tonnes per hectare
+        confidence_interval: Tuple of (lower_bound, upper_bound)
+        model_confidence: Model confidence score (0.0 to 1.0)
+        feature_importance: Dictionary of feature importance scores
+    """
+    yield_estimate: float
+    confidence_interval: Tuple[float, float]
+    model_confidence: float
+    feature_importance: Dict[str, float]
+
+def predict_crop_yield(
+    farm_data: pd.DataFrame,
+    weather_data: pd.DataFrame,
+    model_type: str = "ensemble"
+) -> CropPrediction:
+    """
+    Predict crop yield using advanced machine learning ensemble.
+    
+    Args:
+        farm_data: DataFrame containing farm characteristics
+        weather_data: DataFrame with historical and forecasted weather
+        model_type: Type of model to use ("ensemble", "xgboost", "neural")
+    
+    Returns:
+        CropPrediction object with yield estimate and metadata
+    
+    Raises:
+        ValueError: If input data is invalid or missing required columns
+        ModelError: If prediction model fails to generate results
+    
+    Example:
+        >>> farm_df = pd.DataFrame({...})
+        >>> weather_df = pd.DataFrame({...})
+        >>> prediction = predict_crop_yield(farm_df, weather_df)
+        >>> print(f"Predicted yield: {prediction.yield_estimate:.2f} t/ha")
+    """
+    try:
+        # Validate inputs
+        _validate_input_data(farm_data, weather_data)
+        
+        # Feature engineering
+        features = _engineer_features(farm_data, weather_data)
+        
+        # Model prediction with error handling
+        model = _load_model(model_type)
+        yield_pred, confidence = model.predict_with_uncertainty(features)
+        
+        # Calculate confidence interval
+        ci_lower, ci_upper = _calculate_confidence_interval(
+            yield_pred, confidence, alpha=0.05
+        )
+        
+        # Feature importance analysis
+        importance = _calculate_feature_importance(model, features)
+        
+        return CropPrediction(
+            yield_estimate=float(yield_pred),
+            confidence_interval=(float(ci_lower), float(ci_upper)),
+            model_confidence=float(confidence),
+            feature_importance=importance
+        )
+        
+    except Exception as e:
+        logger.error(f"Crop yield prediction failed: {e}")
+        raise ModelError(f"Prediction failed: {str(e)}") from e
+
+# ❌ Bad: No types, no docs, no error handling
+def predict(f, w):
+    model = load_model()
+    return model.predict(f, w)
+```
+
+#### **Commit Message Convention**
+
+We use [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+**Types:**
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `style`: Code style changes (formatting, etc.)
+- `refactor`: Code refactoring
+- `perf`: Performance improvements
+- `test`: Adding or modifying tests
+- `chore`: Build process or auxiliary tool changes
+
+**Examples:**
+```bash
+# Feature addition
+git commit -m "feat(ml): add rice disease detection model
+
+- Implement YOLOv8-based detection for 15 common diseases
+- Achieve 94.2% accuracy on validation dataset
+- Add real-time inference API endpoint
+- Include treatment recommendations
+
+Closes #456"
+
+# Bug fix
+git commit -m "fix(auth): resolve JWT token expiration handling
+
+- Fix token refresh mechanism
+- Add proper error handling for expired tokens
+- Update frontend to handle auth state changes
+- Add retry logic for failed requests
+
+Fixes #789"
+
+# Documentation update
+git commit -m "docs(api): add comprehensive ML endpoints documentation
+
+- Document all machine learning API endpoints
+- Add request/response examples
+- Include error codes and troubleshooting
+- Update OpenAPI specification"
+```
+
+#### **Pull Request Guidelines**
+
+**PR Title Format:**
+```
+<type>[optional scope]: <description>
+```
+
+**PR Description Template:**
+```markdown
+## Description
+Brief description of changes and motivation.
+
+## Type of Change
+- [ ] Bug fix (non-breaking change which fixes an issue)
+- [ ] New feature (non-breaking change which adds functionality)
+- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
+- [ ] Documentation update
+- [ ] Performance improvement
+- [ ] Code refactoring
+
+## Testing
+- [ ] Unit tests pass
+- [ ] Integration tests pass
+- [ ] E2E tests pass
+- [ ] Manual testing completed
+
+## Checklist
+- [ ] My code follows the project's style guidelines
+- [ ] I have performed a self-review of my code
+- [ ] I have commented my code, particularly in hard-to-understand areas
+- [ ] I have made corresponding changes to the documentation
+- [ ] My changes generate no new warnings
+- [ ] I have added tests that prove my fix is effective or that my feature works
+- [ ] New and existing unit tests pass locally with my changes
+
+## Screenshots (if applicable)
+Add screenshots to help explain your changes.
+
+## Related Issues
+Closes #issue_number
+```
+
+### 🏆 **Recognition & Rewards**
+
+#### **Contribution Levels**
+
+**🌱 Contributor** (1+ merged PR)
+- Name in contributors list
+- Digital certificate
+- KrishiMitra stickers
+
+**🌿 Regular Contributor** (5+ merged PRs)
+- Featured on website
+- Exclusive Discord channel access
+- Early access to new features
+- KrishiMitra t-shirt
+
+**🌳 Core Contributor** (15+ merged PRs)
+- Voting rights on technical decisions
+- Direct access to maintainer team
+- Conference speaking opportunities
+- KrishiMitra hoodie + laptop stickers
+
+**🏆 Maintainer** (Ongoing commitment)
+- Code review responsibilities
+- Release management participation
+- Strategic planning involvement
+- Annual contributors' meetup invitation
+
+#### **Special Recognition Programs**
+
+**🎯 Feature Champions**
+Lead development of major features:
+- AI/ML model improvements
+- New platform integrations
+- Security enhancements
+- Performance optimizations
+
+**🌍 Community Champions**
+Drive community growth and engagement:
+- Documentation improvements
+- User support and mentoring
+- Conference presentations
+- Blog post contributions
+
+**🔬 Research Contributors**
+Academic and research collaborations:
+- Research paper co-authoring
+- Conference presentation opportunities
+- Grant application collaboration
+- University partnership programs
+
+### 🌐 **Community Guidelines**
+
+#### **Code of Conduct**
+
+We are committed to providing a welcoming and inclusive environment for all contributors. Please read our full [Code of Conduct](CODE_OF_CONDUCT.md).
+
+**Key Principles:**
+- **Be Respectful**: Treat everyone with respect and kindness
+- **Be Inclusive**: Welcome contributors from all backgrounds
+- **Be Collaborative**: Work together towards common goals
+- **Be Patient**: Help newcomers learn and grow
+- **Be Professional**: Maintain high standards in all interactions
+
+#### **Communication Channels**
+
+**Development Discussions**
+- **GitHub Discussions**: Project planning and technical discussions
+- **Discord**: Real-time chat and collaboration
+- **Weekly Calls**: Open contributor meetings (Wednesdays 3 PM IST)
+
+**Getting Help**
+- **Slack #contributors**: Quick questions and support
+- **Documentation**: Comprehensive guides and tutorials
+- **Mentorship Program**: Pair with experienced contributors
+
+### 📈 **Contributor Onboarding**
+
+#### **First-Time Contributor Path**
+
+**Week 1: Environment Setup**
+1. Set up development environment
+2. Run the platform locally
+3. Complete "Hello World" contribution
+4. Join community channels
+
+**Week 2: First Contribution**
+1. Pick a "good first issue"
+2. Create feature branch
+3. Implement changes
+4. Submit pull request
+
+**Week 3: Code Review & Learning**
+1. Address review feedback
+2. Learn about testing requirements
+3. Understand documentation standards
+4. Explore different components
+
+**Month 2: Regular Contributions**
+1. Take on medium-complexity issues
+2. Start reviewing other PRs
+3. Contribute to documentation
+4. Participate in community discussions
+
+#### **Mentorship Program**
+
+New contributors are paired with experienced mentors for:
+- Technical guidance and code review
+- Career development advice
+- Open source best practices
+- Agricultural domain knowledge
+
+**Mentor Responsibilities:**
+- Weekly 30-minute calls
+- Code review and feedback
+- Career guidance
+- Community introduction
+
+**Mentee Expectations:**
+- Regular communication
+- Active contribution efforts
+- Openness to feedback
+- Community participation
+
+### 🎯 **Current Contribution Opportunities**
+
+#### **High Priority Areas**
+
+**🚨 Critical Needs**
+- Security vulnerability fixes
+- Performance optimization
+- Mobile app improvements
+- API documentation updates
+
+**🌟 Feature Requests**
+- Advanced weather prediction models
+- Crop disease detection improvements
+- Carbon credit marketplace enhancements
+- Multi-language support expansion
+
+**🔬 Research Projects**
+- Climate change impact modeling
+- Precision agriculture algorithms
+- Blockchain scalability solutions
+- Edge computing optimizations
+
+#### **Skills-Based Opportunities**
+
+**For Developers:**
+- Frontend (React/TypeScript)
+- Backend (Node.js/Python)
+- Mobile (React Native)
+- DevOps (Kubernetes/Docker)
+- ML/AI (Python/TensorFlow)
+
+**For Designers:**
+- UI/UX improvements
+- Mobile app design
+- Brand identity development
+- Accessibility enhancements
+
+**For Domain Experts:**
+- Agricultural best practices
+- Climate science validation
+- Economic modeling
+- Policy recommendations
+
+**For Technical Writers:**
+- API documentation
+- User guides
+- Tutorial creation
+- Blog post writing
+
+***
+
+**Ready to make a difference? Start contributing today!** 🚀
+
+Join thousands of developers, researchers, and domain experts who are building the future of sustainable agriculture. Every contribution, no matter how small, helps us move closer to our goal of empowering 100 million farmers worldwide.
+
+**[Start Contributing Now →](https://github.com/krishimitra/platform/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22)**
+
+</details>
+
+***
+
+## 🔒 Security
+
+<details>
+<summary>🛡️ <strong>Enterprise Security Framework</strong></summary>
+
+### 🎯 **Security Philosophy**
+
+At KrishiMitra, security isn't just a feature—it's the foundation of trust that enables millions of farmers to confidently use our platform for their livelihoods and carbon credit generation. We implement **security by design** across every component.
+
+### 🏛️ **Zero Trust Architecture**
+
+#### **Core Principles**
+```yaml
+Zero Trust Model:
+  - "Never trust, always verify"
+  - Assume breach mentality
+  - Least privilege access
+  - Continuous verification
+  - Micro-segmentation
+  - End-to-end encryption
+```
+
+#### **Implementation**
+```typescript
+// Identity-based access control
+class ZeroTrustAccessControl {
+  async authenticateRequest(request: Request): Promise<AuthContext> {
+    // 1. Verify identity
+    const identity = await this.verifyIdentity(request.headers.authorization);
+    
+    // 2. Check device trust score
+    const deviceTrust = await this.assessDeviceTrust(request.headers);
+    
+    // 3. Evaluate context (location, time, behavior)
+    const contextRisk = await this.assessContextualRisk(identity, request);
+    
+    // 4. Calculate risk score
+    const riskScore = this.calculateRiskScore(deviceTrust, contextRisk);
+    
+    // 5. Apply adaptive authentication
+    if (riskScore > RISK_THRESHOLD) {
+      throw new AdditionalAuthRequiredError('MFA_REQUIRED');
+    }
+    
+    return new AuthContext(identity, riskScore);
+  }
+
+  async authorizeAction(
+    authContext: AuthContext, 
+    resource: string, 
+    action: string
+  ): Promise<boolean> {
+    // Check RBAC permissions
+    const hasPermission = await this.rbac.checkPermission(
+      authContext.user, resource, action
+    );
+    
+    // Apply context-aware policies
+    const policyDecision = await this.abac.evaluate({
+      user: authContext.user,
+      resource,
+      action,
+      context: authContext.context
+    });
+    
+    return hasPermission && policyDecision.allow;
+  }
+}
+```
+
+### 🔐 **Authentication & Authorization**
+
+#### **Multi-Factor Authentication (MFA)**
+```typescript
+// Advanced MFA implementation
+class MFAService {
+  private readonly methods = {
+    SMS: new SMSProvider(),
+    EMAIL: new EmailProvider(),
+    TOTP: new TOTPProvider(),
+    BIOMETRIC: new BiometricProvider(),
+    HARDWARE_KEY: new WebAuthnProvider()
+  };
+
+  async initiateMFA(userId: string, primaryFactor: AuthFactor): Promise<MFAChallenge> {
+    const user = await this.userService.getUser(userId);
+    const riskAssessment = await this.assessLoginRisk(user, primaryFactor);
+    
+    // Adaptive MFA based on risk
+    const requiredFactors = this.determineRequiredFactors(riskAssessment);
+    
+    const challenges: MFAChallenge[] = [];
+    
+    for (const factorType of requiredFactors) {
+      const provider = this.methods[factorType];
+      const challenge = await provider.createChallenge(user);
+      challenges.push(challenge);
+    }
+    
+    return new MFAChallenge(challenges, riskAssessment.sessionTimeout);
+  }
+
+  private determineRequiredFactors(risk: RiskAssessment): FactorType[] {
+    if (risk.score >= 0.8) {
+      return [FactorType.BIOMETRIC, FactorType.HARDWARE_KEY];
+    } else if (risk.score >= 0.5) {
+      return [FactorType.TOTP, FactorType.SMS];
+    } else {
+      return [FactorType.SMS];
+    }
+  }
+}
+```
+
+#### **Role-Based Access Control (RBAC)**
+```typescript
+// Comprehensive RBAC system
+interface Permission {
+  resource: string;
+  action: string;
+  conditions?: PolicyCondition[];
+}
+
+interface Role {
+  name: string;
+  permissions: Permission[];
+  inherits?: string[];
+}
+
+class RBACService {
+  private roles: Map<string, Role> = new Map([
+    ['FARMER', {
+      name: 'FARMER',
+      permissions: [
+        { resource: 'farm', action: 'create' },
+        { resource: 'farm', action: 'read', conditions: [{ field: 'ownerId', operator: 'equals', value: '{{user.id}}' }] },
+        { resource: 'farm', action: 'update', conditions: [{ field: 'ownerId', operator: 'equals', value: '{{user.id}}' }] },
+        { resource: 'crop-data', action: 'create' },
+        { resource: 'iot-data', action: 'read' },
+        { resource: 'carbon-project', action: 'create' },
+        { resource: 'carbon-credit', action: 'trade' }
+      ]
+    }],
+    
+    ['VERIFIER', {
+      name: 'VERIFIER',
+      permissions: [
+        { resource: 'farm', action: 'read' },
+        { resource: 'carbon-project', action: 'verify' },
+        { resource: 'verification-report', action: 'create' },
+        { resource: 'verification-report', action: 'read' },
+        { resource: 'carbon-credit', action: 'issue' }
+      ]
+    }],
+    
+    ['ADMIN', {
+      name: 'ADMIN',
+      inherits: ['FARMER', 'VERIFIER'],
+      permissions: [
+        { resource: '*', action: '*' }
+      ]
+    }]
+  ]);
+
+  async checkPermission(
+    user: User, 
+    resource: string, 
+    action: string, 
+    context?: any
+  ): Promise<boolean> {
+    const userRole = this.roles.get(user.role);
+    if (!userRole) return false;
+
+    // Check direct permissions
+    for (const permission of userRole.permissions) {
+      if (this.matchesPermission(permission, resource, action)) {
+        if (await this.evaluateConditions(permission.conditions, user, context)) {
+          return true;
+        }
+      }
+    }
+
+    // Check inherited permissions
+    if (userRole.inherits) {
+      for (const inheritedRole of userRole.inherits) {
+        const inheritedPermissions = this.roles.get(inheritedRole)?.permissions || [];
+        for (const permission of inheritedPermissions) {
+          if (this.matchesPermission(permission, resource, action)) {
+            if (await this.evaluateConditions(permission.conditions, user, context)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+}
+```
+
+### 🔒 **Data Encryption**
+
+#### **Encryption at Rest**
+```typescript
+// Advanced encryption service
+class EncryptionService {
+  private readonly algorithms = {
+    AES_256_GCM: 'aes-256-gcm',
+    CHACHA20_POLY1305: 'chacha20-poly1305',
+    AES_256_CBC: 'aes-256-cbc'
+  };
+
+  async encryptSensitiveData(
+    data: any, 
+    dataClassification: DataClassification
+  ): Promise<EncryptedData> {
+    const algorithm = this.selectAlgorithm(dataClassification);
+    const key = await this.getEncryptionKey(dataClassification);
+    
+    const serialized = JSON.stringify(data);
+    const iv = crypto.randomBytes(16);
+    
+    const cipher = crypto.createCipher(algorithm, key, { iv });
+    let encrypted = cipher.update(serialized, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+      algorithm,
+      data: encrypted,
+      iv: iv.toString('base64'),
+      authTag: authTag.toString('base64'),
+      keyVersion: await this.getKeyVersion(dataClassification)
+    };
+  }
+
+  async decryptSensitiveData(encryptedData: EncryptedData): Promise<any> {
+    const key = await this.getDecryptionKey(
+      encryptedData.keyVersion,
+      this.getDataClassificationFromAlgorithm(encryptedData.algorithm)
+    );
+    
+    const iv = Buffer.from(encryptedData.iv, 'base64');
+    const authTag = Buffer.from(encryptedData.authTag, 'base64');
+    
+    const decipher = crypto.createDecipher(encryptedData.algorithm, key, { iv });
+    decipher.setAuthTag(authTag);
+    
+    let decrypted = decipher.update(encryptedData.data, 'base64', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return JSON.parse(decrypted);
+  }
+
+  private selectAlgorithm(classification: DataClassification): string {
+    switch (classification) {
+      case DataClassification.TOP_SECRET:
+        return this.algorithms.CHACHA20_POLY1305;
+      case DataClassification.SECRET:
+        return this.algorithms.AES_256_GCM;
+      default:
+        return this.algorithms.AES_256_CBC;
+    }
+  }
+}
+
+enum DataClassification {
+  PUBLIC = 'public',
+  INTERNAL = 'internal',
+  CONFIDENTIAL = 'confidential',
+  SECRET = 'secret',
+  TOP_SECRET = 'top_secret'
+}
+```
+
+#### **Field-Level Encryption**
+```typescript
+// Automatic field encryption for sensitive data
+class FieldEncryption {
+  @Encrypted(DataClassification.SECRET)
+  personalIdentificationNumber: string;
+
+  @Encrypted(DataClassification.CONFIDENTIAL)
+  bankAccountDetails: BankAccount;
+
+  @Encrypted(DataClassification.SECRET)
+  biometricData: BiometricTemplate;
+
+  @Hashed(HashAlgorithm.ARGON2ID)
+  password: string;
+
+  // Property decorator for automatic encryption
+  static Encrypted(classification: DataClassification) {
+    return function (target: any, propertyKey: string) {
+      const privateProp = `_${propertyKey}`;
+      
+      Object.defineProperty(target, propertyKey, {
+        get() {
+          if (!this[privateProp]) return undefined;
+          return encryptionService.decrypt(this[privateProp]);
+        },
+        
+        set(value: any) {
+          if (value === undefined || value === null) {
+            this[privateProp] = value;
+          } else {
+            this[privateProp] = encryptionService.encrypt(value, classification);
+          }
+        },
+        
+        enumerable: true,
+        configurable: true
+      });
+    };
+  }
+}
+```
+
+### 🛡️ **API Security**
+
+#### **Rate Limiting & DDoS Protection**
+```typescript
+// Advanced rate limiting with adaptive thresholds
+class AdaptiveRateLimiter {
+  private readonly windows = new Map<string, TimeWindow>();
+  
+  async checkRateLimit(
+    clientId: string, 
+    endpoint: string, 
+    userTier: UserTier
+  ): Promise<RateLimitResult> {
+    const key = `${clientId}:${endpoint}`;
+    const limits = this.getLimitsForTier(userTier);
+    
+    // Get current window
+    const window = this.getOrCreateWindow(key, limits.windowSizeMs);
+    
+    // Check if request is allowed
+    if (window.requestCount >= limits.maxRequests) {
+      // Implement exponential backoff
+      const backoffTime = this.calculateBackoff(window.violationCount);
+      
+      return {
+        allowed: false,
+        resetTime: window.resetTime + backoffTime,
+        remainingRequests: 0,
+        retryAfter: backoffTime
+      };
+    }
+    
+    // Allow request and update counters
+    window.requestCount++;
+    
+    return {
+      allowed: true,
+      resetTime: window.resetTime,
+      remainingRequests: limits.maxRequests - window.requestCount,
+      retryAfter: 0
+    };
+  }
+
+  private getLimitsForTier(tier: UserTier): RateLimits {
+    switch (tier) {
+      case UserTier.PREMIUM:
+        return { maxRequests: 5000, windowSizeMs: 3600000 }; // 5000### 🔒 Security (continued)
+
+/hr
+      case UserTier.STANDARD:
+        return { maxRequests: 1000, windowSizeMs: 3600000 }; // 1000/hr
+      case UserTier.FREE:
+        return { maxRequests: 100, windowSizeMs: 3600000 }; // 100/hr
+      default:
+        return { maxRequests: 50, windowSizeMs: 3600000 }; // 50/hr
+    }
+  }
+
+  private calculateBackoff(violationCount: number): number {
+    // Exponential backoff: 2^violationCount seconds (max 1 hour)
+    return Math.min(Math.pow(2, violationCount) * 1000, 3600000);
+  }
+}
+```
+
+#### **Input Validation & Sanitization**
+```
+// Comprehensive input validation
+class SecurityValidator {
+  static validateFarmData(data: any): ValidationResult {
+    const schema = Joi.object({
+      name: Joi.string()
+        .trim()
+        .min(2)
+        .max(100)
+        .pattern(/^[a-zA-Z0-9\s\-\_$$$$]+$/)
+        .required()
+        .messages({
+          'string.pattern.base': 'Farm name contains invalid characters'
+        }),
+      
+      area: Joi.number()
+        .positive()
+        .max(10000)
+        .required()
+        .messages({
+          'number.positive': 'Farm area must be positive',
+          'number.max': 'Farm area cannot exceed 10,000 hectares'
+        }),
+      
+      coordinates: Joi.object({
+        lat: Joi.number().min(-90).max(90).required(),
+        lng: Joi.number().min(-180).max(180).required()
+      }).required(),
+      
+      soilType: Joi.string()
+        .valid('CLAY', 'SANDY', 'LOAM', 'SILT', 'PEAT', 'CHALK')
+        .required()
+    });
+
+    const { error, value } = schema.validate(data, {
+      stripUnknown: true,
+      abortEarly: false
+    });
+
+    return {
+      isValid: !error,
+      errors: error?.details.map(d => d.message) || [],
+      sanitizedData: value
+    };
+  }
+
+  static sanitizeHtml(input: string): string {
+    // Use DOMPurify or similar for HTML sanitization
+    return DOMPurify.sanitize(input, {
+      ALLOWED_TAGS: [],
+      ALLOWED_ATTR: []
+    });
+  }
+
+  static validateSqlInput(input: string): boolean {
+    // Detect SQL injection patterns
+    const sqlPatterns = [
+      /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|UNION)\b)/i,
+      /(;|'|"|`|\$$/,
+      /(-{2}|\/\*|\*\/)/
+    ];
+
+    return !sqlPatterns.some(pattern => pattern.test(input));
+  }
+}
+```
+
+### 🔐 **Blockchain Security**
+
+#### **Smart Contract Security**
+```
+// Secure smart contract implementation
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+
+contract SecureCarbonCredit is ReentrancyGuard, Pausable, AccessControl {
+    // Use SafeMath equivalent (built-in in 0.8+)
+    using Address for address;
+    
+    // Events for transparency and monitoring
+    event CreditMinted(uint256 indexed tokenId, address indexed farmer, uint256 amount);
+    event SecurityAlert(address indexed user, string alertType, uint256 timestamp);
+    
+    // Security mappings
+    mapping(address => uint256) private lastTransactionTime;
+    mapping(address => uint256) private transactionCount;
+    
+    // Security constants
+    uint256 private constant TRANSACTION_COOLDOWN = 300; // 5 minutes
+    uint256 private constant MAX_TRANSACTIONS_PER_DAY = 100;
+    
+    modifier securityChecks(address user) {
+        // Check transaction frequency
+        require(
+            block.timestamp >= lastTransactionTime[user] + TRANSACTION_COOLDOWN,
+            "Transaction too frequent"
+        );
+        
+        // Check daily transaction limit
+        require(
+            transactionCount[user] < MAX_TRANSACTIONS_PER_DAY,
+            "Daily transaction limit exceeded"
+        );
+        
+        // Update security tracking
+        lastTransactionTime[user] = block.timestamp;
+        transactionCount[user]++;
+        
+        _;
+    }
+
+    function mintCarbonCredit(
+        address farmer,
+        uint256 carbonAmount,
+        string memory verificationHash
+    ) 
+        external 
+        onlyRole(MINTER_ROLE) 
+        whenNotPaused 
+        nonReentrant 
+        securityChecks(msg.sender) 
+    {
+        // Input validation
+        require(farmer != address(0), "Invalid farmer address");
+        require(carbonAmount > 0 && carbonAmount <= 1000000, "Invalid carbon amount");
+        require(bytes(verificationHash).length == 64, "Invalid verification hash");
+        
+        // Additional security checks
+        require(!Address.isContract(farmer) || _isWhitelistedContract(farmer), "Contract not whitelisted");
+        
+        // Mint logic with overflow protection (built-in Solidity 0.8+)
+        uint256 tokenId = _tokenIdCounter.current();
+        _tokenIdCounter.increment();
+        
+        _safeMint(farmer, tokenId);
+        
+        // Store verification data securely
+        _storeVerificationData(tokenId, verificationHash);
+        
+        emit CreditMinted(tokenId, farmer, carbonAmount);
+    }
+
+    // Emergency functions
+    function emergencyPause() external onlyRole(EMERGENCY_ROLE) {
+        _pause();
+        emit SecurityAlert(msg.sender, "EMERGENCY_PAUSE", block.timestamp);
+    }
+
+    function emergencyWithdraw() external onlyRole(EMERGENCY_ROLE) whenPaused {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No funds to withdraw");
+        
+        (bool success, ) = payable(msg.sender).call{value: balance}("");
+        require(success, "Emergency withdrawal failed");
+        
+        emit SecurityAlert(msg.sender, "EMERGENCY_WITHDRAWAL", block.timestamp);
+    }
+}
+```
+
+### 🚨 **Security Monitoring & Incident Response**
+
+#### **Real-time Security Monitoring**
+```
+// Advanced security monitoring system
+class SecurityMonitoringService {
+  private readonly alertThresholds = {
+    FAILED_LOGIN_ATTEMPTS: 5,
+    API_ERROR_RATE: 0.05,
+    UNUSUAL_DATA_ACCESS: 10,
+    SUSPICIOUS_TRANSACTIONS: 3
+  };
+
+  async monitorSecurityEvents(): Promise<void> {
+    // Monitor authentication failures
+    await this.monitorFailedLogins();
+    
+    // Monitor API abuse
+    await this.monitorAPIAbuse();
+    
+    // Monitor data access patterns
+    await this.monitorDataAccess();
+    
+    // Monitor blockchain transactions
+    await this.monitorBlockchainSecurity();
+  }
+
+  private async monitorFailedLogins(): Promise<void> {
+    const recentFailures = await this.getRecentFailedLogins(15); // Last 15 minutes
+    
+    for (const [ip, attempts] of recentFailures) {
+      if (attempts >= this.alertThresholds.FAILED_LOGIN_ATTEMPTS) {
+        await this.triggerSecurityAlert({
+          type: 'BRUTE_FORCE_ATTACK',
+          severity: 'HIGH',
+          source: ip,
+          details: `${attempts} failed login attempts from ${ip}`,
+          recommendedAction: 'BLOCK_IP'
+        });
+        
+        // Automatically block IP
+        await this.blockIP(ip, '1 hour');
+      }
+    }
+  }
+
+  private async triggerSecurityAlert(alert: SecurityAlert): Promise<void> {
+    // Log to security SIEM
+    await this.securityLogger.logAlert(alert);
+    
+    // Notify security team
+    await this.notificationService.sendSecurityAlert(alert);
+    
+    // Execute automated response
+    await this.executeAutomatedResponse(alert);
+    
+    // Update threat intelligence
+    await this.updateThreatIntel(alert);
+  }
+
+  private async executeAutomatedResponse(alert: SecurityAlert): Promise<void> {
+    switch (alert.recommendedAction) {
+      case 'BLOCK_IP':
+        await this.firewallService.blockIP(alert.source);
+        break;
+      
+      case 'SUSPEND_USER':
+        await this.userService.suspendUser(alert.userId, 'Security incident');
+        break;
+      
+      case 'INCREASE_MONITORING':
+        await this.increaseMonitoringLevel(alert.source);
+        break;
+      
+      case 'ROTATE_KEYS':
+        await this.keyManagementService.rotateKeys(alert.keyId);
+        break;
+    }
+  }
+}
+```
+
+#### **Incident Response Plan**
+```
+// Automated incident response system
+class IncidentResponseSystem {
+  private readonly responsePlaybooks = new Map([
+    ['DATA_BREACH', new DataBreachPlaybook()],
+    ['DDoS_ATTACK', new DDoSPlaybook()],
+    ['MALWARE_DETECTED', new MalwarePlaybook()],
+    ['INSIDER_THREAT', new InsiderThreatPlaybook()]
+  ]);
+
+  async handleSecurityIncident(incident: SecurityIncident): Promise<void> {
+    // Immediate response (< 1 minute)
+    await this.immediateResponse(incident);
+    
+    // Short-term response (< 1 hour)
+    await this.shortTermResponse(incident);
+    
+    // Long-term response (< 24 hours)
+    await this.longTermResponse(incident);
+    
+    // Post-incident activities
+    await this.postIncidentActivities(incident);
+  }
+
+  private async immediateResponse(incident: SecurityIncident): Promise<void> {
+    const playbook = this.responsePlaybooks.get(incident.type);
+    
+    // Execute immediate containment
+    await playbook.executeContainment(incident);
+    
+    // Alert stakeholders
+    await this.alertStakeholders(incident);
+    
+    // Preserve evidence
+    await this.preserveEvidence(incident);
+    
+    // Update status
+    incident.status = IncidentStatus.CONTAINED;
+    await this.updateIncidentStatus(incident);
+  }
+
+  private async alertStakeholders(incident: SecurityIncident): Promise<void> {
+    const stakeholders = this.getStakeholdersForIncident(incident);
+    
+    for (const stakeholder of stakeholders) {
+      await this.notificationService.sendUrgentAlert(stakeholder, {
+        title: `Security Incident: ${incident.type}`,
+        severity: incident.severity,
+        description: incident.description,
+        action: 'IMMEDIATE_ATTENTION_REQUIRED'
+      });
+    }
+    
+    // Notify regulatory bodies if required
+    if (this.requiresRegulatoryNotification(incident)) {
+      await this.notifyRegulatoryBodies(incident);
+    }
+  }
+}
+```
+
+### 🔍 **Vulnerability Management**
+
+#### **Automated Security Scanning**
+```
+# .github/workflows/security-scan.yml
+name: Comprehensive Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *' # Daily at 2 AM
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: SAST - Static Application Security Testing
+      uses: github/super-linter@v4
+      env:
+        DEFAULT_BRANCH: main
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        VALIDATE_TYPESCRIPT_ES: true
+        VALIDATE_PYTHON_BLACK: true
+        VALIDATE_DOCKERFILE_HADOLINT: true
+
+    - name: Dependency Vulnerability Scan
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=medium
+
+    - name: Container Security Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'krishimitra/platform:latest'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Infrastructure Security Scan
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: infrastructure/
+        framework: terraform
+
+    - name: Secret Detection
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD
+
+    - name: DAST - Dynamic Application Security Testing
+      run: |
+        docker run --rm -v $(pwd):/zap/wrk/:rw \
+          -t owasp/zap2docker-stable zap-full-scan.py \
+          -t https://staging.krishimitra.com -J zap-report.json
+
+    - name: Security Report Generation
+      run: |
+        python scripts/generate-security-report.py \
+          --trivy trivy-results.sarif \
+          --snyk snyk-results.json \
+          --zap zap-report.json \
+          --output security-report.html
+
+    - name: Upload Security Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-report
+        path: security-report.html
+```
+
+### 📋 **Compliance & Certifications**
+
+#### **Regulatory Compliance Framework**
+```
+// Compliance management system
+class ComplianceManager {
+  private readonly frameworks = {
+    GDPR: new GDPRCompliance(),
+    CCPA: new CCPACompliance(),
+    SOC2: new SOC2Compliance(),
+    ISO27001: new ISO27001Compliance(),
+    HIPAA: new HIPAACompliance(),
+    PCI_DSS: new PCIDSSCompliance()
+  };
+
+  async assessCompliance(framework: ComplianceFramework): Promise<ComplianceReport> {
+    const compliance = this.frameworks[framework];
+    
+    // Run compliance checks
+    const checks = await compliance.runAllChecks();
+    
+    // Generate compliance score
+    const score = this.calculateComplianceScore(checks);
+    
+    // Identify gaps
+    const gaps = this.identifyComplianceGaps(checks);
+    
+    // Generate remediation plan
+    const remediationPlan = await this.generateRemediationPlan(gaps);
+    
+    return {
+      framework,
+      score,
+      checks,
+      gaps,
+      remediationPlan,
+      assessmentDate: new Date(),
+      nextAssessmentDue: this.calculateNextAssessmentDate(framework)
+    };
+  }
+
+  private async auditDataProcessing(): Promise<DataProcessingAudit> {
+    // Map all data flows
+    const dataFlows = await this.mapDataFlows();
+    
+    // Identify personal data
+    const personalDataInventory = await this.inventoryPersonalData();
+    
+    // Check lawful bases
+    const lawfulBases = await this.validateLawfulBases(personalDataInventory);
+    
+    // Verify retention policies
+    const retentionCompliance = await this.checkRetentionPolicies();
+    
+    return {
+      dataFlows,
+      personalDataInventory,
+      lawfulBases,
+      retentionCompliance,
+      recommendations: await this.generateDataProtectionRecommendations()
+    };
+  }
+}
+```
+
+#### **Data Protection Implementation**
+```
+// GDPR-compliant data handling
+class GDPRDataHandler {
+  async handleDataSubjectRequest(request: DataSubjectRequest): Promise<void> {
+    switch (request.type) {
+      case 'ACCESS':
+        await this.handleAccessRequest(request);
+        break;
+      
+      case 'RECTIFICATION':
+        await this.handleRectificationRequest(request);
+        break;
+      
+      case 'ERASURE':
+        await this.handleErasureRequest(request);
+        break;
+      
+      case 'PORTABILITY':
+        await this.handlePortabilityRequest(request);
+        break;
+      
+      case 'RESTRICTION':
+        await this.handleRestrictionRequest(request);
+        break;
+    }
+  }
+
+  private async handleErasureRequest(request: DataSubjectRequest): Promise<void> {
+    const userId = request.subjectId;
+    
+    // Verify identity
+    await this.verifyDataSubjectIdentity(request);
+    
+    // Check erasure conditions
+    const canErase = await this.checkErasureConditions(userId);
+    if (!canErase.allowed) {
+      throw new ErasureNotPermittedException(canErase.reason);
+    }
+    
+    // Execute right to be forgotten
+    await this.executeDataErasure(userId);
+    
+    // Notify processors
+    await this.notifyDataProcessors(userId, 'ERASURE');
+    
+    // Document compliance
+    await this.documentErasureCompliance(request);
+  }
+
+  private async executeDataErasure(userId: string): Promise<void> {
+    // Database erasure with cryptographic deletion
+    await this.cryptographicallyDeleteUserData(userId);
+    
+    // File system cleanup
+    await this.deleteUserFiles(userId);
+    
+    // Backup erasure (where technically feasible)
+    await this.scheduleBackupErasure(userId);
+    
+    // Third-party service cleanup
+    await this.notifyThirdPartyServices(userId);
+  }
+}
+```
+
+### 🔐 **Security Best Practices Summary**
+
+#### **Development Security Checklist**
+```
+Secure Development Practices:
+  ✅ Threat modeling for all new features
+  ✅ Security code reviews for all changes
+  ✅ SAST/DAST integration in CI/CD
+  ✅ Dependency vulnerability scanning
+  ✅ Secrets management (never in code)
+  ✅ Input validation and sanitization
+  ✅ Output encoding for XSS prevention
+  ✅ SQL injection prevention (parameterized queries)
+  ✅ Authentication and authorization checks
+  ✅ Secure communication (TLS 1.3+)
+
+Infrastructure Security:
+  ✅ Network segmentation and firewalls
+  ✅ Container security scanning
+  ✅ Infrastructure as Code security
+  ✅ Regular security patching
+  ✅ Access logging and monitoring
+  ✅ Backup encryption and testing
+  ✅ Disaster recovery procedures
+  ✅ Security incident response plan
+
+Operational Security:
+  ✅ 24/7 security monitoring
+  ✅ Automated threat detection
+  ✅ Regular security assessments
+  ✅ Employee security training
+  ✅ Vendor security assessments
+  ✅ Compliance audit procedures
+  ✅ Security metrics and KPIs
+  ✅ Continuous improvement process
+```
+
+### 🏆 **Security Certifications Achieved**
+
+```
+Current Certifications:
+  - SOC 2 Type II (Security & Availability)
+  - ISO 27001:2013 (Information Security Management)
+  - GDPR Compliance Certification
+  - PCI DSS Level 1 (Payment Card Industry)
+  - OWASP ASVS Level 2 (Application Security)
+  - CSA STAR (Cloud Security Alliance)
+
+Planned Certifications:
+  - ISO 27017 (Cloud Security)
+  - ISO 27018 (Cloud Privacy)
+  - FedRAMP (US Government Cloud)
+  - HITRUST (Healthcare Security)
+  - Common Criteria EAL4+
+```
+
+This comprehensive security framework ensures that KrishiMitra maintains the highest security standards while protecting the sensitive agricultural and financial data of millions of farmers worldwide. Our commitment to security enables trust and adoption at global scale. 🛡️🌾
+
+---
+
+## 📄 License
+
+**MIT License**
+
+Copyright (c) 2025 KrishiMitra Platform
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## 🌟 Support
+
+<div align="center">
+
+### 💬 **Community & Support Channels**
+
+| Channel | Purpose | Response Time |
+|---------|---------|---------------|
+| 🌐 [**GitHub Discussions**](https://github.com/krishimitra/platform/discussions) | Technical questions & feature requests | 24 hours |
+| 💬 [**Discord Community**](https://discord.gg/krishimitra) | Real-time chat & collaboration | Immediate |
+| 📧 [**Email Support**](mailto:support@krishimitra.com) | General inquiries & bug reports | 12 hours |
+| 📱 **WhatsApp Support** | Farmer assistance (22 languages) | 6 hours |
+| 📞 **24/7 Helpline** | Critical issues & emergencies | Immediate |
+
+### 🎯 **Specialized Support**
+
+| Team | Contact | Expertise |
+|------|---------|-----------|
+| 🌾 **Farmer Success** | [farmer-success@krishimitra.com](mailto:farmer-success@krishimitra.com) | Agriculture, Carbon Credits, Training |
+| 🔧 **Developer Support** | [dev-support@krishimitra.com](mailto:dev-support@krishimitra.com) | API Integration, Technical Implementation |
+| 🏢 **Enterprise Sales** | [enterprise@krishimitra.com](mailto:enterprise@krishimitra.com) | Custom Solutions, Partnerships |
+| 🔒 **Security Issues** | [security@krishimitra.com](mailto:security@krishimitra.com) | Vulnerability Reports, Security Questions |
+
+### 🌍 **Global Presence**
+
+**Headquarters:** Bangalore, India 🇮🇳  
+**Regional Offices:** Delhi, Mumbai, Hyderabad, Pune  
+**International:** Singapore, Dubai, São Paulo, Nairobi  
+**Partner Network:** 50+ countries worldwide  
+
+</div>
+
+---
+
+<div align="center">
+
+## 🎉 **Ready to Transform Agriculture?**
+
+### **KrishiMitra - Har Kisan Ka Digital Saathi**
+
+**Every line of code, every feature, every innovation is dedicated to empowering farmers and healing our planet through sustainable agriculture and carbon action.**
+
+[![Get Started](https://img.shields.io/badge/Get%20Started-green?style=for-the-badge&logo=rocket)](https://krishimitra.com/get-started)
+[![Join Community](https://img.shields.io/badge/Join%20Community-blue?style=for-the-badge&logo=discord)](https://discord.gg/krishimitra)
+[![Contribute](https://img.shields.io/badge/Contribute-orange?style=for-the-badge&logo=github)](https://github.com/krishimitra/platform/blob/main/CONTRIBUTING.md)
+[![Documentation](https://img.shields.io/badge/Documentation-purple?style=for-the-badge&logo=gitbook)](https://docs.krishimitra.com)
+
+### 🌾 **"Technology that transforms agriculture, empowers farmers, and heals the planet"** 🌍
+
+**Made with ❤️ for farmers and planet Earth**
+
+---
+
+**Star ⭐ this repository if you believe in sustainable agriculture!**
+
+</div>
