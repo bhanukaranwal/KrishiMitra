@@ -1,0 +1,851 @@
+// KrishiMitra Database Schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Management
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  phone             String?   @unique
+  password          String
+  firstName         String
+  lastName          String
+  avatar            String?
+  language          String    @default("en")
+  timezone          String    @default("UTC")
+  role              Role      @default(FARMER)
+  status            UserStatus @default(ACTIVE)
+  emailVerified     Boolean   @default(false)
+  phoneVerified     Boolean   @default(false)
+  twoFactorEnabled  Boolean   @default(false)
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  profile           UserProfile?
+  farms             Farm[]
+  projects          CarbonProject[]
+  transactions      Transaction[]
+  notifications     Notification[]
+  sessions          UserSession[]
+  activities        UserActivity[]
+  preferences       UserPreference[]
+  verifications     Verification[]
+  
+  @@map("users")
+}
+
+model UserProfile {
+  id                String    @id @default(cuid())
+  userId            String    @unique
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  dateOfBirth       DateTime?
+  gender            Gender?
+  address           String?
+  city              String?
+  state             String?
+  country           String   @default("IN")
+  pincode           String?
+  coordinates       Json?    // {lat: number, lng: number}
+  
+  // Agricultural Profile
+  farmingExperience Int?     // years
+  landOwnership     LandOwnership?
+  primaryCrops      String[] // array of crop names
+  farmingMethods    String[] // organic, conventional, mixed
+  annualIncome      Decimal? @db.Decimal(10, 2)
+  familySize        Int?
+  
+  // Education & Skills
+  education         EducationLevel?
+  technicalSkills   String[]
+  languages         String[]
+  
+  // Banking & Financial
+  bankAccount       String?
+  ifscCode          String?
+  panNumber         String?
+  aadhaarNumber     String?
+  
+  // Preferences
+  communicationPrefs Json?   // email, sms, whatsapp, push
+  privacySettings   Json?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@map("user_profiles")
+}
+
+// Farm Management
+model Farm {
+  id                String    @id @default(cuid())
+  name              String
+  description       String?
+  ownerId           String
+  owner             User      @relation(fields: [ownerId], references: [id])
+  
+  // Location
+  address           String?
+  coordinates       Json      // {lat: number, lng: number}
+  boundaries        Json?     // GeoJSON polygon
+  area              Decimal   @db.Decimal(10, 4) // hectares
+  
+  // Farm Details
+  soilType          SoilType?
+  irrigationType    IrrigationType[]
+  climaticZone      ClimaticZone?
+  elevation         Int?      // meters above sea level
+  
+  // Status
+  status            FarmStatus @default(ACTIVE)
+  verificationStatus VerificationStatus @default(PENDING)
+  
+  // Metadata
+  registrationNumber String?  @unique
+  surveyNumber      String?
+  revenue Village   String?
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  plots             FarmPlot[]
+  crops             CropCycle[]
+  devices           IoTDevice[]
+  images            FarmImage[]
+  documents         FarmDocument[]
+  weather           WeatherData[]
+  soil              SoilData[]
+  carbonProjects    CarbonProject[]
+  activities        FarmActivity[]
+  
+  @@map("farms")
+}
+
+model FarmPlot {
+  id                String    @id @default(cuid())
+  farmId            String
+  farm              Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  
+  name              String
+  area              Decimal   @db.Decimal(10, 4) // hectares
+  coordinates       Json      // GeoJSON polygon
+  soilType          SoilType?
+  
+  // Current Status
+  currentCrop       String?
+  plantingDate      DateTime?
+  expectedHarvest   DateTime?
+  status            PlotStatus @default(AVAILABLE)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  cropCycles        CropCycle[]
+  soilData          SoilData[]
+  satelliteData     SatelliteData[]
+  
+  @@map("farm_plots")
+}
+
+// Crop Management
+model CropCycle {
+  id                String    @id @default(cuid())
+  farmId            String
+  farm              Farm      @relation(fields: [farmId], references: [id])
+  plotId            String?
+  plot              FarmPlot? @relation(fields: [plotId], references: [id])
+  
+  cropName          String
+  variety           String?
+  season            Season
+  
+  // Cycle Dates
+  plantingDate      DateTime
+  expectedHarvest   DateTime
+  actualHarvest     DateTime?
+  
+  // Areas & Yields
+  plantedArea       Decimal   @db.Decimal(10, 4) // hectares
+  expectedYield     Decimal?  @db.Decimal(10, 2) // tonnes
+  actualYield       Decimal?  @db.Decimal(10, 2) // tonnes
+  
+  // Methods & Inputs
+  farmingMethod     FarmingMethod @default(CONVENTIONAL)
+  seedSource        SeedSource?
+  irrigationMethod  IrrigationType[]
+  
+  // Costs & Revenue
+  totalCost         Decimal?  @db.Decimal(10, 2)
+  totalRevenue      Decimal?  @db.Decimal(10, 2)
+  
+  status            CropCycleStatus @default(PLANNED)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  activities        FarmActivity[]
+  inputs            InputUsage[]
+  diseases          DiseaseRecord[]
+  pests             PestRecord[]
+  harvest           HarvestRecord[]
+  carbonData        CarbonData[]
+  
+  @@map("crop_cycles")
+}
+
+// Carbon Credit System
+model CarbonProject {
+  id                String    @id @default(cuid())
+  name              String
+  description       String?
+  ownerId           String
+  owner             User      @relation(fields: [ownerId], references: [id])
+  farmId            String?
+  farm              Farm?     @relation(fields: [farmId], references: [id])
+  
+  // Project Details
+  methodology       CarbonMethodology
+  standard          CarbonStandard
+  projectType       ProjectType
+  
+  // Timeline
+  startDate         DateTime
+  endDate           DateTime
+  crediting Period  Int       // years
+  
+  // Status
+  status            ProjectStatus @default(DEVELOPMENT)
+  verificationStatus VerificationStatus @default(PENDING)
+  
+  // Estimation & Actual
+  estimatedCredits  Decimal   @db.Decimal(12, 4) // tonnes CO2e
+  issuedCredits     Decimal   @db.Decimal(12, 4) @default(0)
+  retiredCredits    Decimal   @db.Decimal(12, 4) @default(0)
+  
+  // Financial
+  totalInvestment   Decimal?  @db.Decimal(15, 2)
+  expectedRevenue   Decimal?  @db.Decimal(15, 2)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  carbonData        CarbonData[]
+  verifications     Verification[]
+  credits           CarbonCredit[]
+  monitoring        MonitoringReport[]
+  transactions      Transaction[]
+  
+  @@map("carbon_projects")
+}
+
+model CarbonCredit {
+  id                String    @id @default(cuid())
+  tokenId           String?   @unique // blockchain token ID
+  projectId         String
+  project           CarbonProject @relation(fields: [projectId], references: [id])
+  
+  // Credit Details
+  amount            Decimal   @db.Decimal(12, 4) // tonnes CO2e
+  vintageYear       Int
+  serialNumber      String    @unique
+  
+  // Status
+  status            CreditStatus @default(ISSUED)
+  isRetired         Boolean   @default(false)
+  retiredDate       DateTime?
+  retiredBy         String?
+  retirementReason  String?
+  
+  // Blockchain
+  blockchainTxHash  String?
+  smartContractAddr String?
+  
+  // Pricing
+  issuancePrice     Decimal?  @db.Decimal(10, 2)
+  currentPrice      Decimal?  @db.Decimal(10, 2)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  transactions      CreditTransaction[]
+  
+  @@map("carbon_credits")
+}
+
+// IoT Device Management
+model IoTDevice {
+  id                String    @id @default(cuid())
+  deviceId          String    @unique // hardware device ID
+  name              String
+  type              DeviceType
+  model             String?
+  manufacturer      String?
+  
+  // Location
+  farmId            String?
+  farm              Farm?     @relation(fields: [farmId], references: [id])
+  location          Json?     // {lat: number, lng: number}
+  installationDate  DateTime?
+  
+  // Configuration
+  configuration     Json      // device-specific config
+  firmware Version  String?
+  
+  // Status
+  status            DeviceStatus @default(ACTIVE)
+  batteryLevel      Int?      // percentage
+  signalStrength    Int?      // percentage
+  lastSeen          DateTime?
+  
+  // Communication
+  protocol          IoTProtocol
+  endpoint          String?   // MQTT topic, LoRaWAN DevEUI, etc.
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  sensorData        SensorData[]
+  alerts            Alert[]
+  maintenance       DeviceMaintenance[]
+  
+  @@map("iot_devices")
+}
+
+model SensorData {
+  id                String    @id @default(cuid())
+  deviceId          String
+  device            IoTDevice @relation(fields: [deviceId], references: [id])
+  
+  // Environmental Data
+  temperature       Decimal?  @db.Decimal(5, 2) // Celsius
+  humidity          Decimal?  @db.Decimal(5, 2) // percentage
+  soilMoisture      Decimal?  @db.Decimal(5, 2) // percentage
+  soilTemperature   Decimal?  @db.Decimal(5, 2) // Celsius
+  soilPH            Decimal?  @db.Decimal(4, 2)
+  soilEC            Decimal?  @db.Decimal(8, 2) // microsiemens/cm
+  
+  // Weather Data
+  windSpeed         Decimal?  @db.Decimal(5, 2) // m/s
+  windDirection     Int?      // degrees
+  rainfall          Decimal?  @db.Decimal(6, 2) // mm
+  solarRadiation    Decimal?  @db.Decimal(8, 2) // W/m²
+  uv Index          Decimal?  @db.Decimal(4, 2)
+  pressure          Decimal?  @db.Decimal(8, 2) // hPa
+  
+  // Specialized Sensors
+  co2Level          Decimal?  @db.Decimal(8, 2) // ppm
+  nh3Level          Decimal?  @db.Decimal(8, 2) // ppm
+  light Intensity   Decimal?  @db.Decimal(8, 2) // lux
+  
+  // Water & Irrigation
+  waterLevel        Decimal?  @db.Decimal(6, 2) // cm
+  waterFlow         Decimal?  @db.Decimal(8, 2) // L/min
+  waterPressure     Decimal?  @db.Decimal(6, 2) // bar
+  
+  // Location & Time
+  coordinates       Json?     // {lat: number, lng: number}
+  timestamp         DateTime  @default(now())
+  
+  // Data Quality
+  quality           DataQuality @default(GOOD)
+  validated         Boolean   @default(false)
+  
+  createdAt         DateTime  @default(now())
+  
+  @@map("sensor_data")
+  @@index([deviceId, timestamp])
+  @@index([timestamp])
+}
+
+// Satellite Data
+model SatelliteData {
+  id                String    @id @default(cuid())
+  farmId            String?
+  farm              Farm?     @relation(fields: [farmId], references: [id])
+  plotId            String?
+  plot              FarmPlot? @relation(fields: [plotId], references: [id])
+  
+  // Satellite Info
+  satellite         String    // Sentinel-2, Landsat-8, etc.
+  acquisitionDate   DateTime
+  cloudCover        Decimal   @db.Decimal(5, 2) // percentage
+  resolution        Decimal   @db.Decimal(6, 2) // meters
+  
+  // Vegetation Indices
+  ndvi              Decimal?  @db.Decimal(6, 4) // -1 to 1
+  evi               Decimal?  @db.Decimal(6, 4)
+  savi              Decimal?  @db.Decimal(6, 4)
+  gndvi             Decimal?  @db.Decimal(6, 4)
+  ndwi              Decimal?  @db.Decimal(6, 4)
+  
+  // Derived Metrics
+  biomass           Decimal?  @db.Decimal(8, 2) // tonnes/hectare
+  leafArea Index    Decimal?  @db.Decimal(6, 4)
+  cropHealth        Decimal?  @db.Decimal(5, 2) // 0-100 score
+  stressLevel       Decimal?  @db.Decimal(5, 2) // 0-100 score
+  
+  // File References
+  imageUrl          String?   // raw satellite image
+  processedUrl      String?   // processed/enhanced image
+  thumbnailUrl      String?
+  
+  // Geometry
+  boundingBox       Json      // GeoJSON polygon
+  area              Decimal   @db.Decimal(10, 4) // hectares
+  
+  processingStatus  ProcessingStatus @default(COMPLETED)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@map("satellite_data")
+  @@index([farmId, acquisitionDate])
+  @@index([acquisitionDate])
+}
+
+// Weather Data
+model WeatherData {
+  id                String    @id @default(cuid())
+  farmId            String?
+  farm              Farm?     @relation(fields: [farmId], references: [id])
+  
+  // Source
+  source            WeatherSource
+  coordinates       Json      // {lat: number, lng: number}
+  
+  // Current Conditions
+  temperature       Decimal   @db.Decimal(5, 2) // Celsius
+  humidity          Decimal   @db.Decimal(5, 2) // percentage
+  pressure          Decimal   @db.Decimal(8, 2) // hPa
+  windSpeed         Decimal   @db.Decimal(5, 2) // m/s
+  windDirection     Int       // degrees
+  visibility        Decimal?  @db.Decimal(5, 2) // km
+  uvIndex           Decimal?  @db.Decimal(4, 2)
+  
+  // Precipitation
+  rainfall          Decimal   @db.Decimal(6, 2) @default(0) // mm
+  rainfallProbability Decimal? @db.Decimal(5, 2) // percentage
+  
+  // Derived Indices
+  heatIndex         Decimal?  @db.Decimal(5, 2)
+  windChill         Decimal?  @db.Decimal(5, 2)
+  dewPoint          Decimal?  @db.Decimal(5, 2)
+  
+  // Agricultural Indices
+  gdd               Decimal?  @db.Decimal(8, 2) // Growing Degree Days
+  eti               Decimal?  @db.Decimal(8, 2) // Evapotranspiration Index
+  
+  // Time
+  timestamp         DateTime
+  forecastHours     Int       @default(0) // 0 for current, >0 for forecast
+  
+  createdAt         DateTime  @default(now())
+  
+  @@map("weather_data")
+  @@index([farmId, timestamp])
+  @@index([timestamp, forecastHours])
+}
+
+// ML Models and Predictions
+model MLModel {
+  id                String    @id @default(cuid())
+  name              String
+  version           String
+  type              ModelType
+  category          ModelCategory
+  
+  // Model Info
+  algorithm         String
+  framework         String    // tensorflow, pytorch, scikit-learn
+  accuracy          Decimal?  @db.Decimal(5, 4) // 0-1
+  parameters        Json?     // model hyperparameters
+  
+  // Training Data
+  trainingDataset   String?
+  trainingDate      DateTime?
+  trainingDuration  Int?      // minutes
+  
+  // Deployment
+  status            ModelStatus @default(DEVELOPMENT)
+  deploymentUrl     String?
+  servingFramework  String?   // tensorflow-serving, torchserve
+  
+  // Performance Metrics
+  precision         Decimal?  @db.Decimal(5, 4)
+  recall            Decimal?  @db.Decimal(5, 4)
+  f1Score           Decimal?  @db.Decimal(5, 4)
+  rmse              Decimal?  @db.Decimal(10, 6)
+  mae               Decimal?  @db.Decimal(10, 6)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  predictions       Prediction[]
+  experiments       MLExperiment[]
+  
+  @@map("ml_models")
+}
+
+model Prediction {
+  id                String    @id @default(cuid())
+  modelId           String
+  model             MLModel   @relation(fields: [modelId], references: [id])
+  
+  // Input References
+  farmId            String?
+  cropCycleId       String?
+  
+  // Prediction Details
+  type              PredictionType
+  inputData         Json      // input features
+  outputData        Json      // prediction results
+  confidence        Decimal?  @db.Decimal(5, 4) // 0-1
+  
+  // Context
+  predictionDate    DateTime  @default(now())
+  targetDate        DateTime? // when prediction applies to
+  
+  // Validation
+  actualValue       Decimal?  @db.Decimal(15, 6)
+  validationDate    DateTime?
+  accuracy          Decimal?  @db.Decimal(5, 4)
+  
+  createdAt         DateTime  @default(now())
+  
+  @@map("predictions")
+  @@index([modelId, predictionDate])
+  @@index([type, targetDate])
+}
+
+// Notifications and Alerts
+model Alert {
+  id                String    @id @default(cuid())
+  deviceId          String?
+  device            IoTDevice? @relation(fields: [deviceId], references: [id])
+  
+  type              AlertType
+  severity          AlertSeverity
+  title             String
+  message           String
+  
+  // Alert Data
+  triggerValue      Decimal?  @db.Decimal(15, 6)
+  threshold         Decimal?  @db.Decimal(15, 6)
+  context           Json?     // additional context data
+  
+  // Location
+  farmId            String?
+  coordinates       Json?     // {lat: number, lng: number}
+  
+  // Status
+  status            AlertStatus @default(ACTIVE)
+  acknowledgedAt    DateTime?
+  acknowledgedBy    String?
+  resolvedAt        DateTime?
+  
+  // Delivery
+  channels          String[]  // email, sms, push, whatsapp
+  sentAt            DateTime?
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@map("alerts")
+  @@index([type, status])
+  @@index([createdAt])
+}
+
+// Enums
+enum Role {
+  FARMER
+  VERIFIER
+  BUYER
+  ADMIN
+  MODERATOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum LandOwnership {
+  OWNED
+  LEASED
+  SHARECROPPED
+  FAMILY
+}
+
+enum EducationLevel {
+  NONE
+  PRIMARY
+  SECONDARY
+  HIGHER_SECONDARY
+  GRADUATION
+  POST_GRADUATION
+  PROFESSIONAL
+}
+
+enum SoilType {
+  CLAY
+  SANDY
+  LOAM
+  SILT
+  PEAT
+  CHALK
+  BLACK_COTTON
+  ALLUVIAL
+  RED
+  LATERITE
+}
+
+enum IrrigationType {
+  DRIP
+  SPRINKLER
+  FLOOD
+  FURROW
+  MICRO_SPRINKLER
+  RAINFED
+}
+
+enum ClimaticZone {
+  TROPICAL_WET
+  TROPICAL_DRY
+  SUBTROPICAL
+  TEMPERATE
+  ARID
+  SEMI_ARID
+}
+
+enum FarmStatus {
+  ACTIVE
+  INACTIVE
+  UNDER_VERIFICATION
+  SUSPENDED
+}
+
+enum VerificationStatus {
+  PENDING
+  IN_PROGRESS
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+enum PlotStatus {
+  AVAILABLE
+  PLANTED
+  HARVESTED
+  FALLOW
+  PREPARATION
+}
+
+enum Season {
+  KHARIF
+  RABI
+  ZAID
+  YEAR_ROUND
+}
+
+enum FarmingMethod {
+  ORGANIC
+  CONVENTIONAL
+  INTEGRATED
+  NATURAL
+  BIODYNAMIC
+}
+
+enum SeedSource {
+  CERTIFIED
+  FARM_SAVED
+  HYBRID
+  GMO
+  LOCAL_VARIETY
+}
+
+enum CropCycleStatus {
+  PLANNED
+  PLANTED
+  GROWING
+  MATURE
+  HARVESTED
+  COMPLETED
+  FAILED
+}
+
+enum CarbonMethodology {
+  VM0042
+  AMS_III_AU
+  CDM_AR
+  VCS_REDD
+  GOLD_STANDARD
+  PLAN_VIVO
+}
+
+enum CarbonStandard {
+  VCS
+  GOLD_STANDARD
+  CDM
+  PLAN_VIVO
+  CAR
+  ACR
+}
+
+enum ProjectType {
+  AGROFORESTRY
+  RICE_METHANE
+  SOIL_CARBON
+  RENEWABLE_ENERGY
+  ENERGY_EFFICIENCY
+  WASTE_MANAGEMENT
+}
+
+enum ProjectStatus {
+  DEVELOPMENT
+  VALIDATION
+  REGISTERED
+  IMPLEMENTATION
+  MONITORING
+  VERIFICATION
+  COMPLETED
+  SUSPENDED
+}
+
+enum CreditStatus {
+  ISSUED
+  TRANSFERRED
+  RETIRED
+  CANCELLED
+}
+
+enum DeviceType {
+  WEATHER_STATION
+  SOIL_SENSOR
+  WATER_LEVEL
+  IRRIGATION_CONTROLLER
+  CAMERA
+  DRONE
+  GATEWAY
+}
+
+enum DeviceStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+  ERROR
+  LOW_BATTERY
+}
+
+enum IoTProtocol {
+  MQTT
+  LORAWAN
+  NBIOT
+  WIFI
+  BLUETOOTH
+  ZIGBEE
+  SIGFOX
+}
+
+enum DataQuality {
+  EXCELLENT
+  GOOD
+  FAIR
+  POOR
+  INVALID
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum WeatherSource {
+  DEVICE
+  API
+  SATELLITE
+  FORECAST
+}
+
+enum ModelType {
+  CLASSIFICATION
+  REGRESSION
+  TIME_SERIES
+  DEEP_LEARNING
+  ENSEMBLE
+}
+
+enum ModelCategory {
+  CROP_YIELD
+  DISEASE_DETECTION
+  WEATHER_FORECAST
+  CARBON_ESTIMATION
+  PRICE_PREDICTION
+  RISK_ASSESSMENT
+}
+
+enum ModelStatus {
+  DEVELOPMENT
+  TRAINING
+  VALIDATION
+  DEPLOYED
+  RETIRED
+}
+
+enum PredictionType {
+  YIELD_FORECAST
+  DISEASE_RISK
+  WEATHER_FORECAST
+  CARBON_POTENTIAL
+  PRICE_FORECAST
+  IRRIGATION_SCHEDULE
+}
+
+enum AlertType {
+  WEATHER
+  IRRIGATION
+  DISEASE
+  PEST
+  DEVICE_OFFLINE
+  THRESHOLD_EXCEEDED
+  MAINTENANCE_DUE
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AlertStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
