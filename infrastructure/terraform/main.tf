@@ -872,3 +872,28 @@ output "redis_endpoint" {
 output "s3_data_bucket" {
   description = "S3 data bucket name"
   value       = aws_
+output "s3_data_bucket" {
+  description = "S3 data bucket name"
+  value       = aws_s3_bucket.data.bucket
+}
+
+output "s3_satellite_bucket" {
+  description = "S3 satellite data bucket name"
+  value       = aws_s3_bucket.satellite.bucket
+}
+
+output "vpc_id" {
+  description = "VPC ID"
+  value       = aws_vpc.main.id
+}
+
+output "private_subnet_ids" {
+  description = "Private subnet IDs"
+  value       = aws_subnet.private[*].id
+}
+
+output "public_subnet_ids" {
+  description = "Public subnet IDs"
+  value       = aws_subnet.public[*].id
+}
+
