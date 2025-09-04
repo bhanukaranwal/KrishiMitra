@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krishimitra
+  labels:
+    name: krishimitra
+    environment: production
+    team: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krishimitra-staging
+  labels:
+    name: krishimitra-staging
+    environment: staging
+    team: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krishimitra-dev
+  labels:
+    name: krishimitra-dev
+    environment: development
+    team: platform
